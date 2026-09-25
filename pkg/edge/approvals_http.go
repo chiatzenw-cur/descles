@@ -1,12 +1,16 @@
 package edge
 
 import (
+	"context"
+
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"github.com/chiatzenw-cur/descles/pkg/tracing"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // ApprovalAdmin serves approvers on the customer's network: an API and a
@@ -19,6 +23,13 @@ import (
 type ApprovalAdmin struct {
 	Store *ApprovalStore
 	Token string
+	// Traces serves GET /admin/traces/{id}: the edge's local record of one
+	// trace, for evaluations run by the edge's operator. Optional.
+	Traces interface {
+		GetTrace(ctx context.Context, id tracing.TraceID) (*tracing.Trace, error)
+	}
+	// Info serves GET /admin/info (edge id, policy digest, ...). Optional.
+	Info func() map[string]any
 }
 
 // Register mounts the admin routes. Without a token they are not served.
@@ -29,6 +40,12 @@ func (a *ApprovalAdmin) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/{$}", a.page)
 	mux.Handle("GET /admin/approvals", a.auth(http.HandlerFunc(a.list)))
 	mux.Handle("POST /admin/approvals/{id}/{decision}", a.auth(http.HandlerFunc(a.decide)))
+	if a.Traces != nil {
+		mux.Handle("GET /admin/traces/{id}", a.auth(http.HandlerFunc(a.trace)))
+	}
+	if a.Info != nil {
+		mux.Handle("GET /admin/info", a.auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeJSONBody(w, a.Info()) })))
+	}
 }
 
 func (a *ApprovalAdmin) auth(next http.Handler) http.Handler {
@@ -149,3 +166,59 @@ try{document.getElementById("by").value=localStorage.getItem("descles-approver")
 document.getElementById("by").onchange=e=>{try{localStorage.setItem("descles-approver",e.target.value)}catch(_){}};
 document.getElementById("reload").onclick=load;load();
 </script>`
+
+// TraceRecord is one locally recorded span as the admin API returns it.
+type TraceRecord struct {
+	SpanType    string    `json:"span_type"`
+	Status      string    `json:"status"`
+	StartedAt   time.Time `json:"started_at"`
+	EndedAt     time.Time `json:"ended_at"`
+	Model       string    `json:"model,omitempty"`
+	Tool        string    `json:"tool,omitempty"`       // reported (canonical) name
+	ToolLocal   string    `json:"tool_local,omitempty"` // name as the client sent it
+	Decision    string    `json:"policy_decision,omitempty"`
+	InputToks   *int      `json:"input_tokens,omitempty"`
+	OutputToks  *int      `json:"output_tokens,omitempty"`
+	CachedToks  *int      `json:"cached_tokens,omitempty"`
+	CostUSD     *float64  `json:"cost_usd,omitempty"`
+	ToolCallsIn int       `json:"tool_calls_requested,omitempty"`
+	ErrorType   string    `json:"error_type,omitempty"`
+}
+
+func (a *ApprovalAdmin) trace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validID(id) {
+		http.Error(w, "invalid trace id", http.StatusBadRequest)
+		return
+	}
+	t, err := a.Traces.GetTrace(r.Context(), tracing.TraceID(id))
+	if err != nil || t == nil {
+		writeJSONBody(w, map[string]any{"trace_id": id, "records": []TraceRecord{}})
+		return
+	}
+	out := make([]TraceRecord, 0, len(t.Spans))
+	for _, s := range t.Spans {
+		rec := TraceRecord{SpanType: s.SpanType, Status: s.Status, StartedAt: s.StartedAt, EndedAt: s.EndedAt, ErrorType: s.ErrorType,
+			Model: stringAttr(s, tracing.AttrModel), Tool: stringAttr(s, tracing.AttrTool), ToolLocal: stringAttr(s, attrToolLocal),
+			Decision: stringAttr(s, tracing.AttrPolicy), ToolCallsIn: intAttr(s, tracing.AttrToolCalls)}
+		// Absent counts stay absent: an unknown cost is not a zero cost.
+		if _, ok := s.Attributes[tracing.AttrInputToks]; ok {
+			v := intAttr(s, tracing.AttrInputToks)
+			rec.InputToks = &v
+		}
+		if _, ok := s.Attributes[tracing.AttrOutputToks]; ok {
+			v := intAttr(s, tracing.AttrOutputToks)
+			rec.OutputToks = &v
+		}
+		if _, ok := s.Attributes[tracing.AttrCachedToks]; ok {
+			v := intAttr(s, tracing.AttrCachedToks)
+			rec.CachedToks = &v
+		}
+		if _, ok := s.Attributes[tracing.AttrCostUSD]; ok {
+			v := floatAttr(s, tracing.AttrCostUSD)
+			rec.CostUSD = &v
+		}
+		out = append(out, rec)
+	}
+	writeJSONBody(w, map[string]any{"trace_id": id, "records": out})
+}

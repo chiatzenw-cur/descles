@@ -70,7 +70,7 @@ func (e Edge) do(ctx context.Context, method, path string, body any, out any) er
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if tid, ok := ctx.Value(traceKey{}).(string); ok && tid != "" {
-		req.Header.Set("X-Descles-Trace-Id", tid)
+		req.Header.Set("X-Descles-Trace", tid)
 	}
 	resp, err := e.client().Do(req)
 	if err != nil {
@@ -92,9 +92,14 @@ func (e Edge) do(ctx context.Context, method, path string, body any, out any) er
 
 type traceKey struct{}
 
-// WithTrace tags edge requests with a harness session id so the edge groups
-// one session's calls into one trace.
+// WithTrace tags edge requests with a trace id so the edge groups one
+// session's calls into one trace. DESCLES_TRACE_ID, when set (for example by
+// an evaluation run), wins over the harness session id, so model calls and
+// tool checks of one task attempt share one trace.
 func WithTrace(ctx context.Context, session string) context.Context {
+	if forced := strings.TrimSpace(os.Getenv("DESCLES_TRACE_ID")); forced != "" {
+		session = forced
+	}
 	var b strings.Builder
 	for _, c := range session {
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {

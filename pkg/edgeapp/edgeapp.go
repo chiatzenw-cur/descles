@@ -6,7 +6,9 @@ package edgeapp
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -228,6 +230,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	defer closeApprovals()
 	if admin != nil {
 		mcp.Approvals = admin.Store
+		admin.Traces = metered
+		admin.Info = func() map[string]any {
+			info := map[string]any{"edge_id": edgeID, "mode": "standalone", "policy_sha256": policyDigest(holder)}
+			if bundle != nil {
+				info["mode"] = "managed"
+			}
+			return info
+		}
 	}
 	defer closeMCP()
 	inner := h.Routes()
@@ -485,4 +495,19 @@ func edgeApprovals(logger *slog.Logger, spansPath string) (*edge.ApprovalAdmin, 
 	}
 	logger.Info("approvals enabled", "admin", "/admin/", "store", path)
 	return &edge.ApprovalAdmin{Store: store, Token: token}, func() { _ = store.Close() }, nil
+}
+
+// policyDigest identifies the policy in force, so an evaluation manifest can
+// record exactly which rules governed a run.
+func policyDigest(h *policy.Holder) string {
+	p := h.Get()
+	if p == nil {
+		return ""
+	}
+	b, err := json.Marshal(p.Snapshot())
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

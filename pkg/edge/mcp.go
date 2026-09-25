@@ -277,7 +277,7 @@ func (g *MCPGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		g.record(r, started, userID, agentID, connectorID+"."+call.Params.Name, executed, outcome)
 		if outcome == "ok" {
-			g.observe(r.Context(), agentID, connectorID+"."+call.Params.Name, r.Header.Get("X-Descles-Trace-Id"), body)
+			g.observe(r.Context(), agentID, connectorID+"."+call.Params.Name, traceHeader(r), body)
 		}
 	}
 	writeRPC(w, status, body)
@@ -478,7 +478,7 @@ func (g *MCPGateway) record(r *http.Request, started time.Time, userID, agentID,
 	if g.Spans == nil {
 		return
 	}
-	traceID := tracing.TraceID(r.Header.Get("X-Descles-Trace-Id"))
+	traceID := tracing.TraceID(traceHeader(r))
 	if !validID(string(traceID)) {
 		traceID = tracing.NewTraceID()
 	}
@@ -690,4 +690,14 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// traceHeader is the caller's trace id. The model gateway reads
+// X-Descles-Trace; tool paths accept it too (and the older -Id spelling) so
+// one task's model calls and tool calls land in one trace.
+func traceHeader(r *http.Request) string {
+	if v := r.Header.Get("X-Descles-Trace"); v != "" {
+		return v
+	}
+	return r.Header.Get("X-Descles-Trace-Id")
 }
