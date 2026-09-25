@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -218,6 +219,16 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	if err != nil {
 		return err
 	}
+	mcp.EdgeID = edgeID
+	admin, closeApprovals, err := edgeApprovals(logger, cfg.SQLitePath)
+	if err != nil {
+		closeMCP()
+		return err
+	}
+	defer closeApprovals()
+	if admin != nil {
+		mcp.Approvals = admin.Store
+	}
 	defer closeMCP()
 	inner := h.Routes()
 	mux := http.NewServeMux()
@@ -230,6 +241,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	// report after, so shell and file tools fall under the same policy.
 	mux.Handle("POST /v1/tool-check", guardWith(bundle, metered, queue, http.HandlerFunc(mcp.ServeToolCheck)))
 	mux.Handle("POST /v1/tool-report", guardWith(bundle, metered, queue, http.HandlerFunc(mcp.ServeToolReport)))
+	// Approvers keep working even when the policy lease has lapsed: deciding
+	// is not executing, and every approved call is re-checked when it runs.
+	admin.Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if !metered.Ready() || (bundle != nil && !bundle.Valid()) {
 			http.Error(w, "local metering unavailable", http.StatusServiceUnavailable)
@@ -443,4 +457,32 @@ func bundleRefresh() time.Duration {
 		return 30 * time.Second
 	}
 	return d
+}
+
+// edgeApprovals enables human approvals on this edge when an admin token is
+// configured (DESCLES_EDGE_ADMIN_TOKEN or _FILE). Approvals are stored in
+// DESCLES_EDGE_APPROVALS_DB (default: approvals.db next to the span store).
+// Without a token, calls that need approval fail closed.
+func edgeApprovals(logger *slog.Logger, spansPath string) (*edge.ApprovalAdmin, func(), error) {
+	token, err := edgeSecret("DESCLES_EDGE_ADMIN_TOKEN")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	if token == "" {
+		logger.Warn("approvals disabled: set DESCLES_EDGE_ADMIN_TOKEN; calls that need approval will be refused")
+		return nil, func() {}, nil
+	}
+	if len(token) < 24 {
+		return nil, func() {}, fmt.Errorf("DESCLES_EDGE_ADMIN_TOKEN must be at least 24 characters")
+	}
+	path := strings.TrimSpace(os.Getenv("DESCLES_EDGE_APPROVALS_DB"))
+	if path == "" {
+		path = filepath.Join(filepath.Dir(spansPath), "approvals.db")
+	}
+	store, err := edge.OpenApprovals(path)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	logger.Info("approvals enabled", "admin", "/admin/", "store", path)
+	return &edge.ApprovalAdmin{Store: store, Token: token}, func() { _ = store.Close() }, nil
 }

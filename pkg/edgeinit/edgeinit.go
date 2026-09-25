@@ -19,9 +19,10 @@ import (
 	"strings"
 )
 
-// DefaultImage is the published open-core edge image. Pin it by digest once
-// releases are signed; a tag alone is what the generated file warns about.
-const DefaultImage = "ghcr.io/descles/edge:latest"
+// DefaultImage is the open-core edge image the release workflow publishes
+// (signed by digest with cosign). Pin it by digest for production; a tag
+// alone is what the generated compose file warns about.
+const DefaultImage = "ghcr.io/chiatzenw-cur/descles-edge:latest"
 
 type Connector struct {
 	ID  string
@@ -164,6 +165,9 @@ func Generate(o Options) (*Result, error) {
 		"DESCLES_EDGE_ID=" + o.EdgeID,
 		"DESCLES_POLICY_FILE=/config/policy.yaml",
 		"DESCLES_EDGE_MCP_FILE=/config/edge-mcp.yaml",
+		"# Human approvals: decided at /admin/ on this edge with the admin token.",
+		"DESCLES_EDGE_ADMIN_TOKEN_FILE=/config/secrets/admin-token",
+		"DESCLES_EDGE_APPROVALS_DB=/data/approvals.db",
 	}
 	if o.OrgContext {
 		env = append(env,
@@ -222,6 +226,14 @@ func Generate(o Options) (*Result, error) {
 			return nil, err
 		}
 	}
+	// The approvers' token is generated here, on the operator's machine.
+	adminToken, err := randomKey()
+	if err != nil {
+		return nil, err
+	}
+	if err := write("config/secrets/admin-token", strings.TrimPrefix(adminToken, "vk_")+"\n", 0o600); err != nil {
+		return nil, err
+	}
 	if err := write("config/policy.yaml", policyYAML, 0o644); err != nil {
 		return nil, err
 	}
@@ -251,6 +263,7 @@ func Generate(o Options) (*Result, error) {
 		"Review config/policy.yaml and config/edge-mcp.yaml.",
 		"Start: descles edge up --dir " + o.Dir + "   (or: docker compose -f " + filepath.ToSlash(filepath.Join(o.Dir, "compose.yml")) + " up -d)",
 		fmt.Sprintf("Connect an agent: descles connect claude-code --edge http://127.0.0.1:%d --key <agent key>", o.Port),
+		fmt.Sprintf("Approve calls that need a human at http://127.0.0.1:%d/admin/ (token in config/secrets/admin-token).", o.Port),
 	}
 	if err := write("README.md", readme(o, res), 0o644); err != nil {
 		return nil, err
@@ -321,6 +334,8 @@ defaults:
   arg_tools:
     - {tool: local.bash, args: {command: ["*rm -rf*", "*push --force*", "*kubectl delete*", "*terraform destroy*"]}, decision: deny}
     - {tool: local.read, args: {path: ["*.env", "*/secrets/*", "*id_rsa*"]}, decision: deny}
+  # Calls that need a person to approve them at /admin/ on this edge:
+  require_approval: [github.merge_pull_request, stripe.create_refund]
   # require_approval: [local.write]
 `
 

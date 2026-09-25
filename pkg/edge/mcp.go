@@ -115,8 +115,10 @@ type MCPGateway struct {
 	Spans              interface {
 		PutSpan(context.Context, *tracing.Span) error
 	}
-	Extensions []Extension // served at /mcp/<id>; none in the open-core edge
-	Observers  []Observer  // see successful tool results, on the edge
+	EdgeID     string
+	Approvals  *ApprovalStore // nil: calls that need approval fail closed
+	Extensions []Extension    // served at /mcp/<id>; none in the open-core edge
+	Observers  []Observer     // see successful tool results, on the edge
 	Client     *http.Client
 	Logger     *slog.Logger
 }
@@ -196,7 +198,7 @@ func (g *MCPGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	_, userID, agentID, ok := g.Resolve(token)
+	orgID, userID, agentID, ok := g.Resolve(token)
 	if !ok || agentID == "" {
 		http.Error(w, "agent key required", http.StatusUnauthorized)
 		return
@@ -231,18 +233,23 @@ func (g *MCPGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ext != nil {
-		g.serveExtension(w, r, ext, call, userID, agentID)
+		g.serveExtension(w, r, ext, call, orgID, userID, agentID)
 		return
 	}
 	started := time.Now().UTC()
+	executed := policy.Allow // the decision recorded for an executed call
 	if call.Method == "tools/call" {
 		if call.Params.Name == "" {
 			writeRPC(w, http.StatusBadRequest, rpcError(call.ID, -32602, "tool name required"))
 			return
 		}
-		if msg, allowed := g.gate(r, started, userID, agentID, connectorID, call); !allowed {
+		msg, allowed, approvalID := g.gate(r, started, orgID, userID, agentID, connectorID, call)
+		if !allowed {
 			writeRPC(w, http.StatusOK, toolText(call.ID, msg, true))
 			return
+		}
+		if approvalID != "" {
+			executed = policy.RequireApproval
 		}
 	}
 	body, status, headers, err := g.forward(r.Context(), upstream, buf, call, r.Header)
@@ -250,7 +257,7 @@ func (g *MCPGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if call.Method == "tools/call" {
 			// The upstream may or may not have acted: record it as an error,
 			// never retry it silently.
-			g.record(r, started, userID, agentID, connectorID+"."+call.Params.Name, policy.Allow, "error")
+			g.record(r, started, userID, agentID, connectorID+"."+call.Params.Name, executed, "error")
 		}
 		writeRPC(w, http.StatusBadGateway, rpcError(call.ID, -32000, "upstream unavailable: "+err.Error()))
 		return
@@ -268,7 +275,7 @@ func (g *MCPGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if status < 200 || status >= 300 || rpcFailed(body) {
 			outcome = "error"
 		}
-		g.record(r, started, userID, agentID, connectorID+"."+call.Params.Name, policy.Allow, outcome)
+		g.record(r, started, userID, agentID, connectorID+"."+call.Params.Name, executed, outcome)
 		if outcome == "ok" {
 			g.observe(r.Context(), agentID, connectorID+"."+call.Params.Name, r.Header.Get("X-Descles-Trace-Id"), body)
 		}
@@ -276,24 +283,43 @@ func (g *MCPGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeRPC(w, status, body)
 }
 
-// gate applies grants and policy to one tool call, recording refusals.
-func (g *MCPGateway) gate(r *http.Request, started time.Time, userID, agentID, connectorID string, call rpcCall) (string, bool) {
+// gate applies grants and policy to one tool call, recording refusals. When
+// policy requires a human, the call runs only against an approval for this
+// exact call (see ApprovalStore); approvalID is set when one was used.
+func (g *MCPGateway) gate(r *http.Request, started time.Time, orgID, userID, agentID, connectorID string, call rpcCall) (msg string, allowed bool, approvalID string) {
 	full := connectorID + "." + call.Params.Name
 	switch g.decide(agentID, connectorID, call.Params.Name, call.Params.Arguments) {
 	case policy.Allow:
-		return "", true
+		return "", true, ""
 	case policy.RequireApproval:
-		// Approvals are not bridged to the edge yet. Fail closed: a call that
-		// needs a human must not run because the human is out of reach.
+		if g.Approvals == nil {
+			// No approver can be reached on this edge: fail closed.
+			g.record(r, started, userID, agentID, full, policy.RequireApproval, "error")
+			return "Human approval required for " + full + ", and approvals are not enabled on this edge, so the call was not executed.", false, ""
+		}
+		digest, args := ArgsDigest(call.Params.Arguments)
+		id, err := g.Approvals.Consume(r.Context(), orgID, agentID, full, digest)
+		if err != nil {
+			g.record(r, started, userID, agentID, full, policy.RequireApproval, "error")
+			return "Approval state unavailable; the call was not executed.", false, ""
+		}
+		if id != "" {
+			return "", true, id
+		}
+		a, err := g.Approvals.Request(r.Context(), Approval{OrgID: orgID, EdgeID: g.EdgeID, AgentID: agentID, UserID: userID, Tool: full, ArgsDigest: digest}, args)
 		g.record(r, started, userID, agentID, full, policy.RequireApproval, "error")
-		return "Human approval required for " + full + ". Approvals are not yet available on this edge, so the call was not executed.", false
+		if err != nil {
+			return "Approval could not be requested; the call was not executed.", false, ""
+		}
+		return fmt.Sprintf("Human approval required for %s (approval %s). It was not executed. After a person approves it, repeat exactly the same call with the same arguments within %s; changed arguments need a new approval.",
+			full, a.ID, g.Approvals.UseWindow), false, ""
 	default:
 		g.record(r, started, userID, agentID, full, policy.Deny, "error")
-		return "Denied by delegated authority or organization policy", false
+		return "Denied by delegated authority or organization policy", false, ""
 	}
 }
 
-func (g *MCPGateway) serveExtension(w http.ResponseWriter, r *http.Request, ext Extension, call rpcCall, userID, agentID string) {
+func (g *MCPGateway) serveExtension(w http.ResponseWriter, r *http.Request, ext Extension, call rpcCall, orgID, userID, agentID string) {
 	id := ext.ID()
 	switch call.Method {
 	case "initialize":
@@ -317,9 +343,14 @@ func (g *MCPGateway) serveExtension(w http.ResponseWriter, r *http.Request, ext 
 		writeRPC(w, http.StatusOK, rpcResult(call.ID, map[string]any{"tools": tools}))
 	case "tools/call":
 		started := time.Now().UTC()
-		if msg, allowed := g.gate(r, started, userID, agentID, id, call); !allowed {
+		msg, allowed, approvalID := g.gate(r, started, orgID, userID, agentID, id, call)
+		if !allowed {
 			writeRPC(w, http.StatusOK, toolText(call.ID, msg, true))
 			return
+		}
+		executed := policy.Allow
+		if approvalID != "" {
+			executed = policy.RequireApproval
 		}
 		args := call.Params.Arguments
 		if args == nil {
@@ -329,7 +360,7 @@ func (g *MCPGateway) serveExtension(w http.ResponseWriter, r *http.Request, ext 
 		out, err := ext.Call(r.Context(), caller, call.Params.Name, normalizeNumbers(args).(map[string]any))
 		full := id + "." + call.Params.Name
 		if err != nil {
-			g.record(r, started, userID, agentID, full, policy.Allow, "error")
+			g.record(r, started, userID, agentID, full, executed, "error")
 			msg := err.Error()
 			if errors.Is(err, ErrNotFound) {
 				msg = "not found"
@@ -337,7 +368,7 @@ func (g *MCPGateway) serveExtension(w http.ResponseWriter, r *http.Request, ext 
 			writeRPC(w, http.StatusOK, toolText(call.ID, msg, true))
 			return
 		}
-		g.record(r, started, userID, agentID, full, policy.Allow, "ok")
+		g.record(r, started, userID, agentID, full, executed, "ok")
 		text, ok := out.(string)
 		if !ok {
 			b, _ := json.MarshalIndent(out, "", "  ")

@@ -136,6 +136,20 @@ func TestGeneratedStandaloneEdgeBootsAndEnforces(t *testing.T) {
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong key: %v %v", resp, err)
 	}
+	// Approvals are on, behind the generated admin token.
+	adminToken, _ := os.ReadFile(filepath.Join(dir, "config", "secrets", "admin-token"))
+	for token, want := range map[string]int{strings.TrimSpace(string(adminToken)): 200, res.AgentKey: 401} {
+		req, _ := http.NewRequest(http.MethodGet, base+"/admin/approvals?state=pending", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != want {
+			t.Fatalf("admin approvals with token %q...: %v %v", token[:6], resp, err)
+		}
+		resp.Body.Close()
+	}
+	if resp, err := http.Get(base + "/admin/"); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("approver page: %v %v", resp, err)
+	}
 	// Standalone means nothing is queued for anyone.
 	if _, err := os.Stat(filepath.Join(dir, "data", "outbox.db")); err == nil {
 		t.Fatal("standalone edge created an outbox")

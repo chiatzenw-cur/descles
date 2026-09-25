@@ -18,6 +18,7 @@ Standalone edges (`DESCLES_EDGE_REPORT_URL=off`) send nothing to Descles.
 | MCP tool arguments and results | Only the connector's MCP server, then back to the agent | Not stored by the open-core edge. Extensions (enterprise organization context) may store claims extracted from results. | Never |
 | Native tool input from harness hooks (shell commands, file paths) | The edge's `/v1/tool-check`, used for the policy decision | Not stored. Only the normalized tool name and the decision are recorded. | Never |
 | Tool evidence in model requests (tools the model called and their results) | — | Tool name, resource (file path or URL), operation, result length and SHA-256. The first ~180 characters of the result are kept only when `DESCLES_LOG_PAYLOADS=true`. | Never |
+| Arguments of calls that need a human approval | The approver's browser or CLI, from the edge's `/admin/` (your network) | In the local approvals database while pending or approved; erased when the approval is used, denied or expires. The SHA-256 digest, tool, agent, approver name and times remain. | Never |
 | Agent virtual keys | Developer machine → your edge | SHA-256 hash only | Hash only, in managed mode, where the control plane issued the key |
 | Process logs (stdout) | Wherever you ship logs | Method, path, status, trace header, duration, error messages. No request or response bodies. | Never |
 

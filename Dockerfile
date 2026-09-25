@@ -2,7 +2,7 @@
 # Build:  docker build -t descles/edge .
 # Use:    descles edge init --image descles/edge   (or the published, digest-pinned image)
 
-FROM golang:1.27-alpine AS build
+FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG EDGE_CMD=edge
 WORKDIR /src
@@ -11,7 +11,7 @@ RUN GOPROXY=$GOPROXY go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOPROXY=$GOPROXY go build -trimpath -ldflags="-s -w" -o /descles-edge ./cmd/${EDGE_CMD}
 
-FROM alpine:3.20
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 RUN apk add --no-cache ca-certificates && adduser -D -H -u 10001 descles && \
     mkdir -p /data && chown descles:descles /data
 USER descles

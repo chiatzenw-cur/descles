@@ -95,6 +95,25 @@ POST /v1/tool-check   {"client":"hermes","tool":"terminal","input":{"command":".
 POST /v1/tool-report  {"client":"hermes","tool":"terminal","outcome":"ok|error"}
 ```
 
+## Human approvals on the edge
+
+Policy can mark a tool `require_approval` (for example `stripe.create_refund`). On an MCP call to it, the
+edge does not execute. It records a request and tells the agent an approval id. A person decides at
+`http://<edge>/admin/`, or:
+
+```bash
+descles approvals list --edge http://127.0.0.1:8081 --admin-token-file my-edge/config/secrets/admin-token
+descles approvals approve apr_... --by alice --reason "ticket 42" --edge ... --admin-token-file ...
+```
+
+The approval covers **one execution of exactly that call**: the same agent, tool and arguments (by
+canonical digest), within 15 minutes of the decision. Changed arguments, a second run or a late retry need
+a new approval. Grants and policy are checked again when the approved call runs, so revoking the agent
+still stops it. Arguments are shown only from the edge and erased once the approval closes.
+
+For Claude Code's native tools, `require_approval` becomes Claude Code's own permission prompt: the
+person at the keyboard approves.
+
 ## One policy for every harness
 
 Tool names are normalized, so one rule covers Claude Code's `Bash`, Codex's `shell` and Hermes's

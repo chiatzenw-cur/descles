@@ -7,6 +7,7 @@
 //	descles key [--file <path>]                                                   (Claude Code apiKeyHelper)
 //	descles edge init [--dir descles-edge] [--mode standalone|hosted] [--yes]     (generate a VPC edge deployment)
 //	descles edge up   [--dir descles-edge]                                        (start it with docker compose)
+//	descles approvals list | approve <id> | deny <id> --edge <url> --admin-token-file <path>
 package main
 
 import (
@@ -36,7 +37,8 @@ func usage() error {
   descles hook claude-code pre|post --edge URL [--key-file PATH]
   descles key [--file PATH]
   descles edge init [--dir DIR] [--mode standalone|hosted] [--yes]
-  descles edge up [--dir DIR]`)
+  descles edge up [--dir DIR]
+  descles approvals list | approve ID | deny ID  --edge URL --admin-token-file PATH [--by NAME]`)
 }
 
 func run(args []string) error {
@@ -54,6 +56,8 @@ func run(args []string) error {
 			return usage()
 		}
 		return runHook(args[2], args[3:])
+	case "approvals":
+		return runApprovals(args[1:])
 	case "edge":
 		if len(args) < 2 {
 			return usage()

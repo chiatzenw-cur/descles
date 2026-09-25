@@ -24,8 +24,11 @@ your agents ─┘   audit · budgets
   executed with a credential only the edge holds. Agents never see it.
 - **Native tools too**: Claude Code hooks send shell and file tools to `POST /v1/tool-check` before they
   run, so one policy covers `rm -rf`, `git push --force` and reading `.env` in every harness.
-- **Local audit**: every decision and execution is recorded on the edge. Tool input and prompts are not
-  stored.
+- **Human approvals on the edge**: tools marked `require_approval` wait for a person at `/admin/` (or
+  `descles approvals`). An approval covers one execution of exactly that call and is checked against
+  policy again when it runs. Arguments are shown only from the edge and erased afterwards.
+- **Local audit**: every decision and execution is recorded on the edge. Prompts and tool input are not
+  stored, except the arguments of a call awaiting approval, which are erased when the approval closes.
 - **Trace format**: `pkg/trajectory` is the open schema for agent runs, so what your agents did stays
   readable and portable.
 
@@ -43,6 +46,9 @@ descles connect claude-code --edge http://127.0.0.1:8081 --key <agent key printe
 
 See [docs/CONNECT-AGENTS.md](docs/CONNECT-AGENTS.md) for Codex, Hermes and other agents, and for the
 tool names policies match on.
+
+To check that a release is what this source builds (rebuild and compare, provenance, cosign), see
+[docs/VERIFY-RELEASE.md](docs/VERIFY-RELEASE.md).
 
 ## Standalone or managed
 
