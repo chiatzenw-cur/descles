@@ -168,7 +168,7 @@ func TestClaudeSettingsMergeIsIdempotentAndKeepsUserConfig(t *testing.T) {
 	if len(pre) != 2 || !strings.Contains(string(twice), "my-linter") {
 		t.Fatalf("user hook lost or descles hook duplicated: %+v", pre)
 	}
-	if !strings.Contains(s["apiKeyHelper"].(string), "'tools/descles.exe' key --file 'home/.descles/agent-key'") || strings.Contains(string(twice), "vk_") {
+	if !strings.Contains(s["apiKeyHelper"].(string), shellQuote(self)+" key --file "+shellQuote(keyFile)) || strings.Contains(string(twice), "vk_") {
 		t.Fatalf("apiKeyHelper: %v", s["apiKeyHelper"])
 	}
 	if _, err := ClaudeSettings([]byte("{not json"), "https://e", "d", "k"); err == nil {
@@ -211,5 +211,17 @@ func TestHermesHookAgainstRealEdge(t *testing.T) {
 	dead := Edge{URL: "http://127.0.0.1:1", Key: "k"}
 	if r := HermesHook(context.Background(), dead, strings.NewReader(`{"hook_event_name":"pre_tool_call","tool_name":"terminal","tool_input":{"command":"ls"}}`), false); !strings.Contains(r.Stdout, "fail-closed") {
 		t.Fatalf("unreachable edge must block: %q", r.Stdout)
+	}
+}
+
+func TestShellQuoteWorksForBothWindowsShells(t *testing.T) {
+	defer func(old string) { goos = old }(goos)
+	goos = "windows"
+	if got := shellQuote(`C:\Program Files\descles\descles.exe`); got != `"C:/Program Files/descles/descles.exe"` {
+		t.Fatalf("windows: %s (cmd.exe rejects single quotes)", got)
+	}
+	goos = "linux"
+	if got := shellQuote("/opt/it's $HOME/descles"); got != `'/opt/it'\''s $HOME/descles'` {
+		t.Fatalf("posix: %s", got)
 	}
 }

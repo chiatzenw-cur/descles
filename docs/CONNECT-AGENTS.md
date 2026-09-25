@@ -66,6 +66,12 @@ descles connect claude-code --edge https://descles.internal --key <agent key>
 
 Use `--dry-run` to see the exact changes first.
 
+Verified with Claude Code 2.1 on Windows, using the settings `connect` writes, with a DeepSeek
+Anthropic-compatible upstream behind the edge. Every model call was recorded, `rm -rf` was blocked by the
+hook, and `echo` ran. When the edge's provider is not Anthropic, tell Claude Code which model to request
+with `ANTHROPIC_MODEL` (and `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL` for background calls). The
+edge forwards model names unchanged.
+
 ## Codex CLI
 
 ```bash

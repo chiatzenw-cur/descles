@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -74,12 +75,21 @@ func isDesclesHook(entry any) bool {
 	return false
 }
 
-// shellQuote quotes for the POSIX shell Claude Code runs hooks and helpers in
-// (Git Bash on Windows), with forward slashes so Windows paths survive.
+// shellQuote quotes a path for the shell Claude Code runs helpers and hooks
+// in. On Windows that can be cmd.exe (apiKeyHelper) or Git Bash (hooks), and
+// only double quotes work in both; Windows paths cannot contain '"', '$' is
+// literal in cmd, and forward slashes keep bash from eating backslashes.
+// Elsewhere it is a POSIX shell, where single quotes stop all expansion.
+// (Found in a live Claude Code run: single quotes made cmd.exe fail.)
 func shellQuote(s string) string {
-	s = filepath.ToSlash(s)
+	if goos == "windows" {
+		return `"` + strings.ReplaceAll(s, `\`, "/") + `"`
+	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// goos is runtime.GOOS, a variable so tests can check both quoting styles.
+var goos = runtime.GOOS
 
 // ClaudeMCPCommands are the `claude mcp add` invocations that register the
 // edge's MCP connectors. The CLI stores headers in the user's local Claude
