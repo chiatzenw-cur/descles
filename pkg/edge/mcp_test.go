@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/chiatzenw-cur/descles/pkg/policy"
 	"github.com/chiatzenw-cur/descles/pkg/tracing"
@@ -162,6 +163,7 @@ func TestEdgeMCPGovernsExecutesAndLearns(t *testing.T) {
 	}
 
 	// Observers saw exactly the one successful call; refusals are not results.
+	g.Close(5 * time.Second) // observations are delivered in the background
 	memo := g.Extensions[0].(*memoExt)
 	if len(memo.seen) != 1 || memo.seen[0].Tool != "stripe.get_customer" || memo.seen[0].AgentID != "agent_fin" {
 		t.Fatalf("observations: %+v", memo.seen)

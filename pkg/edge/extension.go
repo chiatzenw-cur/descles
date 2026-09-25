@@ -37,8 +37,11 @@ type Caller struct {
 	Clearances []string
 }
 
-// Observer receives successful governed tool results, on the edge, after the
-// result has been returned to the agent's request path. It must not block.
+// Observer receives successful governed tool results, on the edge, from one
+// background worker fed by a bounded queue, so it never delays the agent's
+// response. Delivery is best effort: a full queue drops (and counts)
+// observations, and pending ones are drained for a bounded time at shutdown.
+// An observer that must not lose data needs its own durable queue.
 type Observer interface {
 	Observe(ctx context.Context, obs Observation)
 }

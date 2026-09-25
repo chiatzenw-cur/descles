@@ -21,6 +21,7 @@ import (
 	"github.com/chiatzenw-cur/descles/pkg/config"
 	"github.com/chiatzenw-cur/descles/pkg/edge"
 	"github.com/chiatzenw-cur/descles/pkg/policy"
+	"github.com/chiatzenw-cur/descles/pkg/pricing"
 	"github.com/chiatzenw-cur/descles/pkg/provider"
 	"github.com/chiatzenw-cur/descles/pkg/proxy"
 	"github.com/chiatzenw-cur/descles/pkg/storage"
@@ -138,7 +139,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 			return err
 		}
 	}
-	metered := &edge.MeteredStore{Storage: local, Outbox: queue, EdgeID: edgeID}
+	metered := &edge.MeteredStore{Storage: local, Outbox: queue, EdgeID: edgeID, Filter: reportFilter(keyedProviders, cfg.AnthropicAPIKey != "")}
 	defer metered.Close()
 	h := proxy.New(cfg, provider.NewRegistry(keyedProviders), holder, metered, logger)
 	if bundle != nil {
@@ -196,7 +197,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	}()
 	if bundle != nil {
 		go func() {
-			ticker := time.NewTicker(30 * time.Second)
+			ticker := time.NewTicker(bundleRefresh())
 			defer ticker.Stop()
 			for {
 				select {
@@ -339,6 +340,12 @@ func edgeMCP(logger *slog.Logger, spans *edge.MeteredStore, holder *policy.Holde
 		g.Extensions = append(g.Extensions, exts...)
 		g.Observers = append(g.Observers, obs...)
 	}
+	// Drain observers before plugins close the stores they write to.
+	pluginClosers := closeAll
+	closeAll = func() {
+		g.Close(10 * time.Second)
+		pluginClosers()
+	}
 	logger.Info("edge tool gateway ready", "connectors", len(g.Config.Connectors), "extensions", len(g.Extensions), "observers", len(g.Observers))
 	return g, closeAll, nil
 }
@@ -396,4 +403,44 @@ func Main(plugins ...Plugin) int {
 		return 1
 	}
 	return 0
+}
+
+// reportFilter lists the model and provider names this edge may report. A
+// client chooses the model name it sends, so only names an administrator
+// approved leave the edge: the public model ids of the built-in price table,
+// exact (non-wildcard) model names in the provider config, and
+// DESCLES_EDGE_REPORT_MODELS (comma-separated). Everything else is reported
+// as "other" and kept verbatim in the local record.
+func reportFilter(providers []provider.Config, anthropic bool) *edge.ReportFilter {
+	var models, names []string
+	for m := range pricing.All() {
+		if !strings.HasPrefix(m, "_") {
+			models = append(models, m)
+		}
+	}
+	for _, p := range providers {
+		models = append(models, p.Models...)
+		name := p.Name
+		if name == "" {
+			name = provider.ProviderName(p.BaseURL)
+		}
+		names = append(names, name)
+	}
+	if anthropic {
+		names = append(names, "anthropic")
+	}
+	models = append(models, strings.Split(os.Getenv("DESCLES_EDGE_REPORT_MODELS"), ",")...)
+	return edge.NewReportFilter(models, names)
+}
+
+// bundleRefresh is how often a managed edge pulls its signed bundle
+// (DESCLES_EDGE_BUNDLE_REFRESH, default 30s, 5s-5m). While connected, a
+// revocation takes effect within about one interval plus the fetch time;
+// while disconnected, the bundle lease set by the control plane bounds it.
+func bundleRefresh() time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(os.Getenv("DESCLES_EDGE_BUNDLE_REFRESH")))
+	if err != nil || d < 5*time.Second || d > 5*time.Minute {
+		return 30 * time.Second
+	}
+	return d
 }

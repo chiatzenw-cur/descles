@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -42,7 +43,7 @@ func (o *Outbox) Close() error { return o.db.Close() }
 
 func (o *Outbox) Enqueue(ctx context.Context, metadata Metadata) error {
 	if err := metadata.Validate(); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalidMetadata, err)
 	}
 	payload, err := json.Marshal(metadata)
 	if err != nil {
@@ -85,6 +86,7 @@ type MeteredStore struct {
 	storage.Storage
 	Outbox *Outbox
 	EdgeID string
+	Filter *ReportFilter // approved model/provider names; nil reports them as "other"
 	failed atomic.Bool
 }
 
@@ -92,9 +94,17 @@ func (s *MeteredStore) Ready() bool { return !s.failed.Load() }
 
 // PutSpan records locally and, unless the edge is standalone (nil Outbox),
 // queues the span's metadata for the control plane.
+//
+// Only a failure to persist stops the edge (fail closed: no unrecorded
+// execution). A record the metadata contract rejects is still kept locally
+// and reported as an error for that call alone, so one bad request cannot
+// take the edge down for everyone.
 func (s *MeteredStore) PutSpan(ctx context.Context, span *tracing.Span) error {
+	var invalid error
 	if s.Outbox != nil {
-		if err := s.Outbox.Enqueue(ctx, FromSpan(s.EdgeID, span)); err != nil {
+		if err := s.Outbox.Enqueue(ctx, s.Filter.Apply(FromSpan(s.EdgeID, span))); errors.Is(err, ErrInvalidMetadata) {
+			invalid = err
+		} else if err != nil {
 			s.failed.Store(true)
 			return err
 		}
@@ -103,7 +113,7 @@ func (s *MeteredStore) PutSpan(ctx context.Context, span *tracing.Span) error {
 		s.failed.Store(true)
 		return err
 	}
-	return nil
+	return invalid
 }
 
 func (s *MeteredStore) Close() error {

@@ -1,14 +1,15 @@
-# Descles edge: the open-core data plane only (no hosted control-plane code).
+# Descles edge: the data plane only (no hosted control-plane code).
 # Build:  docker build -t descles/edge .
 # Use:    descles edge init --image descles/edge   (or the published, digest-pinned image)
 
 FROM golang:1.27-alpine AS build
 ARG GOPROXY=https://proxy.golang.org,direct
+ARG EDGE_CMD=edge
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN GOPROXY=$GOPROXY go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOPROXY=$GOPROXY go build -trimpath -ldflags="-s -w" -o /descles-edge ./cmd/edge
+RUN CGO_ENABLED=0 GOPROXY=$GOPROXY go build -trimpath -ldflags="-s -w" -o /descles-edge ./cmd/${EDGE_CMD}
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates && adduser -D -H -u 10001 descles && \

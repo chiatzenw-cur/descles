@@ -13,6 +13,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -85,7 +87,22 @@ func LoadMCPConfig(file string) (*MCPConfig, error) {
 // MCPGateway governs MCP tool calls on the customer side: authenticate the
 // agent key, check delegated grants and organization policy, execute with a
 // locally held credential, record metadata, and learn from the result.
+// attrToolLocal keeps the tool name as the client sent it, for the local
+// record only; the reported name (tracing.AttrTool) is canonical.
+const attrToolLocal = "tool_local"
+
 type MCPGateway struct {
+	catalogMu sync.Mutex
+
+	ObserverQueue int // pending-observation bound; 0 means 1000
+	obsOnce       sync.Once
+	obsMu         sync.RWMutex
+	obsClosed     bool
+	obsCh         chan Observation
+	obsDone       chan struct{}
+	obsDropped    atomic.Int64
+	tools         map[string]map[string]bool // connector -> tool names the upstream listed
+
 	Config        *MCPConfig
 	Resolve       func(key string) (orgID, userID, agentID string, ok bool)
 	GroupOf       func(agentID string) string
@@ -351,11 +368,77 @@ func normalizeNumbers(v any) any {
 	return v
 }
 
-func (g *MCPGateway) observe(ctx context.Context, agentID, tool, traceID string, body []byte) {
-	for _, o := range g.Observers {
-		o.Observe(ctx, Observation{Tool: tool, AgentID: agentID, TraceID: traceID, Result: body})
+// observe hands a successful result to the observers without delaying the
+// agent's response: a bounded queue drained by one background worker. When
+// the queue is full the observation is dropped and counted; the tool call
+// itself has already happened and is recorded either way. Observers are
+// best-effort learners, not part of the execution record.
+func (g *MCPGateway) observe(_ context.Context, agentID, tool, traceID string, body []byte) {
+	if len(g.Observers) == 0 {
+		return
+	}
+	g.obsOnce.Do(g.startObservers)
+	g.obsMu.RLock()
+	defer g.obsMu.RUnlock()
+	if g.obsClosed {
+		return
+	}
+	select {
+	case g.obsCh <- Observation{Tool: tool, AgentID: agentID, TraceID: traceID, Result: body}:
+	default:
+		if n := g.obsDropped.Add(1); g.Logger != nil && (n == 1 || n%100 == 0) {
+			g.Logger.Warn("observer queue full; observation dropped", "tool", g.reportableTool(tool), "dropped_total", n)
+		}
 	}
 }
+
+// defaultObserverQueue bounds pending observations when ObserverQueue is 0.
+const defaultObserverQueue = 1000
+
+func (g *MCPGateway) startObservers() {
+	size := g.ObserverQueue
+	if size <= 0 {
+		size = defaultObserverQueue
+	}
+	g.obsCh = make(chan Observation, size)
+	g.obsDone = make(chan struct{})
+	go func() {
+		defer close(g.obsDone)
+		for obs := range g.obsCh {
+			for _, o := range g.Observers {
+				// Independent of the request: the agent may be long gone.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				o.Observe(ctx, obs)
+				cancel()
+			}
+		}
+	}()
+}
+
+// Close stops accepting observations and waits (up to timeout) for queued
+// ones to finish, so observers can close their stores safely afterwards.
+func (g *MCPGateway) Close(timeout time.Duration) {
+	g.obsMu.Lock()
+	started := g.obsCh != nil && !g.obsClosed
+	g.obsClosed = true
+	if started {
+		close(g.obsCh)
+	}
+	g.obsMu.Unlock()
+	if !started {
+		return
+	}
+	select {
+	case <-g.obsDone:
+	case <-time.After(timeout):
+		if g.Logger != nil {
+			g.Logger.Warn("observers did not drain before shutdown", "pending", len(g.obsCh))
+		}
+	}
+}
+
+// ObservationsDropped reports observations lost to a full queue.
+func (g *MCPGateway) ObservationsDropped() int64 { return g.obsDropped.Load() }
 
 // record writes one tool span locally; the metered store also queues its
 // metadata (tool name, decision, outcome; never arguments) for the control
@@ -372,10 +455,10 @@ func (g *MCPGateway) record(r *http.Request, started time.Time, userID, agentID,
 		SpanID: tracing.NewSpanID(), TraceID: traceID, SpanType: tracing.SpanTypeTool,
 		StartedAt: started, EndedAt: time.Now().UTC(), ActorType: "agent", ActorID: agentID,
 		AgentID: agentID, UserID: userID, Status: status,
-		Attributes: map[string]any{tracing.AttrTool: tool, tracing.AttrPolicy: string(decision)},
+		Attributes: map[string]any{tracing.AttrTool: g.reportableTool(tool), tracing.AttrPolicy: string(decision), attrToolLocal: truncate(tool, 200)},
 	}
 	if err := g.Spans.PutSpan(r.Context(), span); err != nil && g.Logger != nil {
-		g.Logger.Error("tool call metering failed; edge will refuse new calls", "tool", tool, "err", err)
+		g.Logger.Error("tool call metering failed", "tool", g.reportableTool(tool), "err", err)
 	}
 }
 
@@ -443,6 +526,7 @@ func (g *MCPGateway) filterTools(body []byte, agentID, connectorID string) []byt
 		if name == "" {
 			continue
 		}
+		g.catalog(connectorID, name)
 		// Argument-scoped rules cannot be judged without arguments, so only
 		// tools denied outright are hidden; every call is re-checked anyway.
 		if g.neverAllowed(agentID, connectorID+"."+name) {
@@ -510,4 +594,69 @@ func rpcResult(id any, result any) []byte {
 
 func toolText(id any, text string, isError bool) []byte {
 	return rpcResult(id, map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "isError": isError})
+}
+
+// catalog remembers a tool name an upstream MCP server declared in tools/list.
+// Declared names come from the customer's own server, not from the agent, so
+// they may be reported; names an agent invents are not.
+func (g *MCPGateway) catalog(connectorID, tool string) {
+	if !validToolName(connectorID + "." + tool) {
+		return
+	}
+	g.catalogMu.Lock()
+	defer g.catalogMu.Unlock()
+	if g.tools == nil {
+		g.tools = map[string]map[string]bool{}
+	}
+	if g.tools[connectorID] == nil {
+		g.tools[connectorID] = map[string]bool{}
+	}
+	if len(g.tools[connectorID]) < 1000 {
+		g.tools[connectorID][tool] = true
+	}
+}
+
+// reportableTool maps a tool name to one that may leave the edge: an
+// extension's own tool, a tool the upstream declared, or one of the
+// normalized local tool classes. Anything else becomes "<connector>.other".
+func (g *MCPGateway) reportableTool(full string) string {
+	prefix, name, ok := strings.Cut(full, ".")
+	if !ok {
+		return ReportOther
+	}
+	switch prefix {
+	case "local":
+		switch name {
+		case "bash", "write", "read", "web":
+			return full
+		}
+		return "local.other"
+	case "mcp":
+		return "mcp.other"
+	}
+	if ext := g.extension(prefix); ext != nil {
+		for _, t := range ext.Tools() {
+			if t.Name == name && validToolName(full) {
+				return full
+			}
+		}
+		return prefix + ".other"
+	}
+	if _, known := g.connector(prefix); !known {
+		return ReportOther
+	}
+	g.catalogMu.Lock()
+	declared := g.tools[prefix][name]
+	g.catalogMu.Unlock()
+	if declared {
+		return full
+	}
+	return prefix + ".other"
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

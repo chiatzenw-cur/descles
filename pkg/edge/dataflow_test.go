@@ -98,7 +98,7 @@ func TestDataFlowToolCheckInputIsNotRecorded(t *testing.T) {
 	}
 	for _, s := range rec.spans {
 		for k := range s.Attributes {
-			if k != tracing.AttrTool && k != tracing.AttrPolicy {
+			if k != tracing.AttrTool && k != tracing.AttrPolicy && k != attrToolLocal {
 				t.Errorf("unexpected local attribute %q", k)
 			}
 		}

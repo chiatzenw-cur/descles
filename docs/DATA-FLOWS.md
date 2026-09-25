@@ -31,9 +31,9 @@ test fails if this list and the code disagree:
 - `span_id`: random id of the record
 - `trace_id`: one-way hash of the local trace id (the raw id, which may be a harness session id, stays on the edge)
 - `kind`: empty for a model call, `tool` for a tool call
-- `tool`: `connector.tool` name, for example `github.create_issue` or `local.bash`
+- `tool`: a tool your MCP server declared in `tools/list` (for example `github.create_issue`), an extension's own tool, or a local tool class (`local.bash`, `local.write`, `local.read`, `local.web`). Any other name an agent sends is reported as `<connector>.other`, `local.other` or `mcp.other`.
 - `agent_id`, `user_id`: the ids your control plane issued
-- `model`, `provider`: which model and provider served the call
+- `model`, `provider`: only names on the edge's approved list are reported: the public model ids in the built-in price table, exact model names in your provider config, `DESCLES_EDGE_REPORT_MODELS`, and your configured provider names. Anything else is reported as `other`.
 - `status`: `ok`, `error` or `cancelled`
 - `policy_decision`: `allow`, `deny`, `require_approval` or `rate_limit`
 - `input_tokens`, `output_tokens`, `cached_tokens`, `usage_known`: token counts as reported by the provider
@@ -44,9 +44,12 @@ test fails if this list and the code disagree:
 
 Things to know about these fields:
 
-- **Tool names are yours.** A connector or MCP server you name `acme-payroll` appears as
-  `acme-payroll.export`. Choose connector ids with that in mind.
-- **Model names** are whatever your agents request.
+- **Field names alone do not keep content out.** A client chooses the model name and tool name it sends,
+  so both are mapped to approved identifiers before they leave; the original stays in the local record.
+- **Connector ids are yours.** A connector you name `acme-payroll` appears as `acme-payroll.export`
+  (declared tools) or `acme-payroll.other`. Choose connector ids with that in mind.
+- **Not a covert-channel guarantee.** Timing, call counts and token counts still leave a managed edge.
+  A customer that must rule out every side channel should run the edge standalone.
 
 ## What Descles sends to a managed edge
 
