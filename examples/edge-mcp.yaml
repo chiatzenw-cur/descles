@@ -1,0 +1,27 @@
+# Customer-side MCP connectors. This file and every token file stay on the edge;
+# the hosted control plane never sees connector URLs' credentials or results.
+# Mount at /config/edge-mcp.yaml and set DESCLES_EDGE_MCP_FILE=/config/edge-mcp.yaml.
+#
+# Agents call  POST http://<edge>/mcp/<id>   with their agent virtual key.
+# Extensions (e.g. organization context in the enterprise edge) are served at
+# POST /mcp/<extension id>; "org" is reserved for it.
+connectors:
+  - id: stripe
+    url: https://mcp.stripe.com
+    token_file: /config/secrets/stripe-token
+  - id: github
+    url: https://api.githubcopilot.com/mcp/
+    token_file: /config/secrets/github-token
+  - id: crm
+    url: http://crm-mcp.internal:8000/mcp   # inside your network
+    insecure_http: true
+
+# Organization-context labels each agent or group may read. They add to any
+# context_labels the signed bundle grants. Unlabeled facts are visible to every
+# authenticated agent; a labeled fact needs every one of its labels.
+clearances:
+  agents:
+    REPLACE_WITH_FINANCE_AGENT_ID: [finance]
+  groups:
+    sales: [sales]
+    leadership: ["*"]

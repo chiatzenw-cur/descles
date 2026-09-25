@@ -1,0 +1,21 @@
+# Customer-side policy. This file stays with the data plane.
+# Unlisted tools currently default to allow; list every sensitive tool.
+defaults:
+  tools:
+    shell.rm: deny
+    github.delete_repository: deny
+  # Client-native tools reported by harness hooks (see docs/CONNECT-AGENTS.md):
+  # local.bash, local.write, local.read, local.web, mcp.<server>.<tool>.
+  require_approval: [local.write]
+  arg_tools:
+    - {tool: local.bash, args: {command: ["*rm -rf*", "*push --force*", "*kubectl delete*", "*terraform destroy*"]}, decision: deny}
+    - {tool: local.read, args: {path: ["*.env", "*/secrets/*", "*id_rsa*"]}, decision: deny}
+  budget:
+    daily_usd: 10
+agents:
+  # Replace with the agent ID in edge-secrets/keys.json.
+  REPLACE_WITH_AGENT_ID:
+    tools:
+      github.create_issue: deny
+    budget:
+      daily_usd: 3
