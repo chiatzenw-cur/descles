@@ -126,7 +126,7 @@ func New(cfg config.Config, reg *provider.Registry, pol *policy.Holder, store st
 	if pol == nil {
 		pol = policy.NewHolder(policy.AllowAll())
 	}
-	return &Handler{Cfg: cfg, Registry: reg, Policy: pol, Store: store, Logger: log}
+	return &Handler{Cfg: cfg, Registry: reg, Policy: pol, Store: detachedStore{store}, Logger: log}
 }
 
 // Routes returns the fully-wired HTTP handler.
@@ -1588,4 +1588,16 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// detachedStore writes records with a context that the client cannot cancel.
+// Streaming clients often disconnect the moment a response ends; with the
+// request context that would silently drop the record of a call that did
+// happen (found in a live Hermes run).
+type detachedStore struct{ storage.Storage }
+
+func (d detachedStore) PutSpan(ctx context.Context, span *tracing.Span) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return d.Storage.PutSpan(ctx, span)
 }

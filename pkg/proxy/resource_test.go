@@ -1,9 +1,15 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/chiatzenw-cur/descles/pkg/config"
+	"github.com/chiatzenw-cur/descles/pkg/storage"
+	"github.com/chiatzenw-cur/descles/pkg/tracing"
 )
 
 func TestExtractToolEvidenceOpenAI(t *testing.T) {
@@ -105,5 +111,19 @@ func TestEvidencePreviewFollowsPayloadLogging(t *testing.T) {
 	on.Cfg.LogPayloads = true
 	if ev := on.evidence(sample()); ev[0].Preview == "" {
 		t.Fatal("payload logging on keeps the preview")
+	}
+}
+
+func TestSpansAreStoredAfterClientDisconnect(t *testing.T) {
+	mem := storage.NewMemory()
+	h := New(config.Config{}, nil, nil, mem, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	now := time.Now().UTC()
+	if err := h.Store.PutSpan(ctx, &tracing.Span{SpanID: "s", TraceID: "t", SpanType: tracing.SpanTypeLLM, Status: "ok", StartedAt: now, EndedAt: now}); err != nil {
+		t.Fatalf("record dropped because the client went away: %v", err)
+	}
+	if tr, err := mem.GetTrace(context.Background(), "t"); err != nil || len(tr.Spans) != 1 {
+		t.Fatalf("stored: %v %v", tr, err)
 	}
 }

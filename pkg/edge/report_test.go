@@ -124,3 +124,31 @@ func TestSlowObserverNeitherBlocksResponsesNorQueuesWithoutBound(t *testing.T) {
 	g.Close(5 * time.Second)
 	g.observe(context.Background(), "a", "x.y", "t", nil) // after Close: ignored, no panic
 }
+
+// Found in a live Hermes run: a streaming client that disconnects as soon as
+// the response ends cancels the request context. The audit record must still
+// be written, and the edge must not treat the cancellation as a disk failure.
+func TestRecordSurvivesClientDisconnect(t *testing.T) {
+	queue, err := OpenOutbox(filepath.Join(t.TempDir(), "outbox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := storage.NewSQLite(filepath.Join(t.TempDir(), "spans.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &MeteredStore{Storage: local, Outbox: queue, EdgeID: "e1"}
+	defer store.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client already went away
+	if err := store.PutSpan(ctx, llmSpan("gone", "claude-sonnet-4-5", 5)); err != nil || !store.Ready() {
+		t.Fatalf("record lost on client disconnect: %v ready=%v", err, store.Ready())
+	}
+	if n, _ := queue.Count(context.Background()); n != 1 {
+		t.Fatalf("metadata queued = %d", n)
+	}
+	trace, err := local.GetTrace(context.Background(), "t")
+	if err != nil || len(trace.Spans) != 1 {
+		t.Fatalf("local record: %v %v", trace, err)
+	}
+}

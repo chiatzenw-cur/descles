@@ -35,6 +35,7 @@ func usage() error {
 	return errors.New(`usage:
   descles connect claude-code|codex|openai --edge URL [--key KEY] [flags]
   descles hook claude-code pre|post --edge URL [--key-file PATH]
+  descles hook hermes --edge URL [--key-file PATH]      (Hermes pre_tool_call / post_tool_call)
   descles key [--file PATH]
   descles edge init [--dir DIR] [--mode standalone|hosted] [--yes]
   descles edge up [--dir DIR]
@@ -52,6 +53,9 @@ func run(args []string) error {
 		}
 		return runConnect(args[1], args[2:])
 	case "hook":
+		if len(args) >= 2 && args[1] == "hermes" {
+			return runHermesHook(args[2:])
+		}
 		if len(args) < 3 || args[1] != "claude-code" {
 			return usage()
 		}
@@ -248,6 +252,37 @@ func runHook(phase string, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	res := connect.ClaudeHook(ctx, connect.Edge{URL: base, Key: key}, phase, os.Stdin, *failOpen)
+	if res.Stdout != "" {
+		fmt.Println(res.Stdout)
+	}
+	if res.Stderr != "" {
+		fmt.Fprintln(os.Stderr, res.Stderr)
+	}
+	os.Exit(res.Code)
+	return nil
+}
+
+// runHermesHook serves both Hermes hook events; the event is in the payload.
+func runHermesHook(args []string) error {
+	fs := flag.NewFlagSet("hook hermes", flag.ContinueOnError)
+	edgeURL := fs.String("edge", os.Getenv("DESCLES_EDGE_URL"), "edge base URL")
+	def, _ := connect.KeyFile()
+	keyFile := fs.String("key-file", def, "agent key file")
+	failOpen := fs.Bool("fail-open", os.Getenv("DESCLES_HOOK_FAIL_OPEN") == "1", "allow tools when the edge is unreachable")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	base, err := connect.NormalizeURL(*edgeURL)
+	if err != nil {
+		return err
+	}
+	key, err := connect.LoadKey(*keyFile)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res := connect.HermesHook(ctx, connect.Edge{URL: base, Key: key}, os.Stdin, *failOpen)
 	if res.Stdout != "" {
 		fmt.Println(res.Stdout)
 	}

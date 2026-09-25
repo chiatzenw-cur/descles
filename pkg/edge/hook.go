@@ -19,7 +19,7 @@ import (
 // Names are normalized so one policy covers every harness:
 //
 //	Bash / shell / exec_command    -> local.bash    args: command
-//	Edit / MultiEdit / Write       -> local.write   args: path
+//	Edit / MultiEdit / Write / patch -> local.write args: path
 //	Read / Glob / Grep / LS        -> local.read    args: path, pattern
 //	WebFetch / WebSearch           -> local.web     args: url, query
 //	mcp__<server>__<tool>          -> mcp.<server>.<tool>
@@ -87,10 +87,10 @@ func NormalizeTool(name string, input map[string]any) (string, map[string]any) {
 		}
 		copyField("command", "cmd")
 		return "local.bash", args
-	case "edit", "multiedit", "write", "notebookedit", "apply_patch", "write_file":
+	case "edit", "multiedit", "write", "notebookedit", "apply_patch", "write_file", "patch":
 		copyField("path", "file_path", "notebook_path")
 		return "local.write", args
-	case "read", "glob", "grep", "ls", "read_file", "list_dir":
+	case "read", "glob", "grep", "ls", "read_file", "list_dir", "search_files":
 		copyField("path", "file_path", "path")
 		return "local.read", args
 	case "webfetch", "websearch", "web_search", "fetch":

@@ -187,3 +187,29 @@ func TestCodexConfigManagedBlock(t *testing.T) {
 		t.Fatalf("block content:\n%s", twice)
 	}
 }
+
+func TestHermesHookAgainstRealEdge(t *testing.T) {
+	e, rec := realEdge(t)
+	run := func(in string) HookResult {
+		return HermesHook(context.Background(), e, strings.NewReader(in), false)
+	}
+	r := run(`{"hook_event_name":"pre_tool_call","tool_name":"terminal","tool_input":{"command":"rm -rf ./build"},"session_id":"h-1"}`)
+	var out map[string]string
+	if json.Unmarshal([]byte(r.Stdout), &out) != nil || out["decision"] != "block" || !strings.Contains(out["reason"], "local.bash") {
+		t.Fatalf("Hermes terminal rm -rf must be blocked in Hermes' dialect: %q", r.Stdout)
+	}
+	if r := run(`{"hook_event_name":"pre_tool_call","tool_name":"terminal","tool_input":{"command":"echo hi"},"session_id":"h-1"}`); r.Stdout != "" || r.Code != 0 {
+		t.Fatalf("allowed command must defer to Hermes: %+v", r)
+	}
+	if r := run(`{"hook_event_name":"pre_tool_call","tool_name":"patch","tool_input":{"path":"main.go"},"session_id":"h-1"}`); !strings.Contains(r.Stdout, `"block"`) {
+		t.Fatalf("patch is a write and the test policy requires approval for writes: %q", r.Stdout)
+	}
+	before := len(rec.got)
+	if r := run(`{"hook_event_name":"post_tool_call","tool_name":"terminal","tool_input":{"command":"echo hi"},"session_id":"h-1","extra":{"result":"hi"}}`); r.Code != 0 || len(rec.got) != before+1 {
+		t.Fatalf("post_tool_call must report one execution: %+v", r)
+	}
+	dead := Edge{URL: "http://127.0.0.1:1", Key: "k"}
+	if r := HermesHook(context.Background(), dead, strings.NewReader(`{"hook_event_name":"pre_tool_call","tool_name":"terminal","tool_input":{"command":"ls"}}`), false); !strings.Contains(r.Stdout, "fail-closed") {
+		t.Fatalf("unreachable edge must block: %q", r.Stdout)
+	}
+}

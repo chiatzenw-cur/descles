@@ -38,8 +38,8 @@ and never sees a credential.
 | Model traffic → routing, budgets, audit | ✅ `/anthropic` | ✅ `/v1` (responses) | ✅ `/v1` (chat, responses) |
 | Edge MCP connectors (and extensions such as enterprise `org` context) | ✅ | ✅ | ✅ (configure the URLs) |
 | Model-proposed tool calls checked against policy | ✅ | ✅ | ✅ |
-| **Built-in shell / file tools checked before they run** | ✅ PreToolUse hook | ❌ no pre-execution hook | via `/v1/tool-check` if the agent calls it |
-| Execution recorded after it runs | ✅ PostToolUse hook | — | via `/v1/tool-report` |
+| **Built-in shell / file tools checked before they run** | ✅ PreToolUse hook | ❌ no pre-execution hook | ✅ Hermes `pre_tool_call` hook; others via `/v1/tool-check` |
+| Execution recorded after it runs | ✅ PostToolUse hook | — | ✅ Hermes `post_tool_call`; others via `/v1/tool-report` |
 
 ## Claude Code
 
@@ -80,7 +80,33 @@ is left alone. Codex has no pre-execution hook, so **its built-in shell is not c
 Keep Codex's sandbox on, and expose sensitive systems (prod DBs, cloud, payments) only through edge
 MCP connectors, where every call is enforced.
 
-## Hermes and other OpenAI-compatible agents
+## Hermes Agent
+
+Verified with Hermes Agent v0.21 and DeepSeek through the edge. The session's model calls were all
+recorded, `rm -rf` was blocked before it ran, and `echo` was allowed. In Hermes' `config.yaml`:
+
+```yaml
+model:
+  provider: descles-edge
+  default: <model your edge's provider serves>
+providers:
+  descles-edge:
+    name: descles-edge
+    base_url: http://127.0.0.1:8081/v1
+    key_env: DESCLES_AGENT_KEY          # your agent key, not a provider key
+hooks:
+  pre_tool_call:
+    - {command: 'descles hook hermes --edge http://127.0.0.1:8081', timeout: 15, fail_closed: true}
+  post_tool_call:
+    - {command: 'descles hook hermes --edge http://127.0.0.1:8081', timeout: 15}
+```
+
+Hermes asks once to trust a new shell hook (or set `HERMES_ACCEPT_HOOKS=1`). Its `terminal` tool maps to
+`local.bash`, `write_file`/`patch` to `local.write`, and `read_file`/`search_files` to `local.read`.
+Hermes shell hooks cannot ask a person, so `require_approval` blocks with the reason. An allowed call
+still goes through Hermes' own approval rules.
+
+## Other OpenAI-compatible agents
 
 ```bash
 descles connect openai --edge https://descles.internal --key <agent key>

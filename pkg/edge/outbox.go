@@ -100,6 +100,11 @@ func (s *MeteredStore) Ready() bool { return !s.failed.Load() }
 // and reported as an error for that call alone, so one bad request cannot
 // take the edge down for everyone.
 func (s *MeteredStore) PutSpan(ctx context.Context, span *tracing.Span) error {
+	// The record outlives the request: a client that disconnects as soon as a
+	// stream ends must not erase the audit of what it just did, nor make the
+	// edge look like its disk failed. Bounded so a hung store still surfaces.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	var invalid error
 	if s.Outbox != nil {
 		if err := s.Outbox.Enqueue(ctx, s.Filter.Apply(FromSpan(s.EdgeID, span))); errors.Is(err, ErrInvalidMetadata) {
