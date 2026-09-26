@@ -216,9 +216,16 @@ configuration (`descles connect claude-code --playbook-version team@1` sets the 
 | `pkg/policy` | Policy engine |
 | `pkg/trajectory` | Open trace format |
 
-The paid Descles offering (the hosted control plane, organization context, evaluation across agent
-configurations) builds on this edge through `pkg/edge/extension.go` and the managed-edge protocol. It is not
-in this repository.
+The paid Descles offering builds on this edge through `pkg/edge/extension.go` and the managed-edge protocol,
+and is not in this repository. Where it runs matters more than where its source lives:
+
+| Paid part | Runs | Holds |
+|---|---|---|
+| Organization context, skills mined from runs | On the enterprise edge, in your network (a build of this edge with the extension) | Facts about your customers, people and work; your agents' runs. Stays in your network |
+| Control plane | Hosted by Descles | Identities, delegation, policy, and the metadata listed in [DATA-FLOWS](docs/DATA-FLOWS.md). No prompts, results or keys |
+
+So the organization's data layer is self-hosted even though its code is not open source; what is open is
+the part that decides what leaves your network.
 
 ## Security
 

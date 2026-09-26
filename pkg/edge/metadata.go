@@ -38,9 +38,15 @@ type Metadata struct {
 
 func FromSpan(edgeID string, span *tracing.Span) Metadata {
 	if span.SpanType == tracing.SpanTypeTool {
+		agentID := span.AgentID
+		if strings.HasPrefix(agentID, "system:") {
+			// Edge background work (SystemCall) is not an agent of the
+			// organization; report it unattributed. The local record keeps it.
+			agentID = ""
+		}
 		return Metadata{
 			EdgeID: edgeID, SpanID: string(span.SpanID), TraceID: pseudonym(string(span.TraceID)), Kind: "tool",
-			Tool: stringAttr(span, tracing.AttrTool), AgentID: span.AgentID, UserID: span.UserID,
+			Tool: stringAttr(span, tracing.AttrTool), AgentID: agentID, UserID: span.UserID,
 			Status: span.Status, Policy: stringAttr(span, tracing.AttrPolicy),
 			StartedAt: span.StartedAt, EndedAt: span.EndedAt,
 		}

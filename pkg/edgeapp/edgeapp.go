@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -235,6 +236,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		return err
 	}
 	mcp.EdgeID = edgeID
+	closeMCP = startSystemWork(ctx, logger, mcp, closeMCP)
 	admin, closeApprovals, err := edgeApprovals(logger, cfg.SQLitePath)
 	if err != nil {
 		closeMCP()
@@ -556,4 +558,42 @@ func approvalNotifier(logger *slog.Logger) (*edge.ApprovalNotifier, error) {
 	}
 	logger.Info("approval notifications enabled", "include_args", n.IncludeArgs)
 	return n, nil
+}
+
+// startSystemWork starts plugin background work (edge.SystemStarter) with
+// the gateway as its SystemCaller, and returns a close function that stops
+// that work and waits for it before closing the plugins' stores.
+func startSystemWork(ctx context.Context, logger *slog.Logger, g *edge.MCPGateway, closeMCP func()) func() {
+	var starters []edge.SystemStarter
+	seen := map[any]bool{}
+	add := func(v any) {
+		if s, ok := v.(edge.SystemStarter); ok && !seen[v] {
+			seen[v] = true
+			starters = append(starters, s)
+		}
+	}
+	for _, e := range g.Extensions {
+		add(e)
+	}
+	for _, o := range g.Observers {
+		add(o)
+	}
+	if len(starters) == 0 {
+		return closeMCP
+	}
+	workCtx, stop := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	for _, s := range starters {
+		wg.Add(1)
+		go func(s edge.SystemStarter) {
+			defer wg.Done()
+			s.Start(workCtx, g)
+		}(s)
+	}
+	logger.Info("edge background work started", "count", len(starters))
+	return func() {
+		stop()
+		wg.Wait()
+		closeMCP()
+	}
 }
