@@ -128,7 +128,7 @@ func (h *Handler) handleAnthropicMessages(w http.ResponseWriter, r *http.Request
 		ProjectID:      meta.identity.ProjectID,
 		ResourceType:   "llm",
 		ResourceID:     base,
-		Attributes:     map[string]any{tracing.AttrProvider: "anthropic", tracing.AttrModel: dto.Model},
+		Attributes:     map[string]any{tracing.AttrProvider: "anthropic", tracing.AttrModel: dto.Model, tracing.AttrPlaybook: meta.identity.PlaybookVersion},
 	}
 	if ev := h.evidence(extractToolEvidenceAnthropic(body)); len(ev) > 0 {
 		span.Attributes["tool_evidence"] = ev

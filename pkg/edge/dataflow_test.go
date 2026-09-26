@@ -98,7 +98,8 @@ func TestDataFlowToolCheckInputIsNotRecorded(t *testing.T) {
 	}
 	for _, s := range rec.spans {
 		for k := range s.Attributes {
-			if k != tracing.AttrTool && k != tracing.AttrPolicy && k != attrToolLocal {
+			// playbook_version is a charset-restricted label, not tool input.
+			if k != tracing.AttrTool && k != tracing.AttrPolicy && k != attrToolLocal && k != tracing.AttrPlaybook {
 				t.Errorf("unexpected local attribute %q", k)
 			}
 		}

@@ -51,6 +51,7 @@ const (
 	AttrToolCalls  = "tool_calls_requested"
 	AttrPolicy     = "policy_decision"
 	AttrTool       = "tool_name" // connector.tool for governed tool calls
+	AttrPlaybook   = "playbook_version"
 	AttrErrorType  = "error_type"
 )
 

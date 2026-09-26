@@ -168,6 +168,11 @@ func Generate(o Options) (*Result, error) {
 		"# Human approvals: decided at /admin/ on this edge with the admin token.",
 		"DESCLES_EDGE_ADMIN_TOKEN_FILE=/config/secrets/admin-token",
 		"DESCLES_EDGE_APPROVALS_DB=/data/approvals.db",
+		"# Notify approvers (Slack incoming webhook or any HTTPS endpoint; arguments are not sent):",
+		"# DESCLES_EDGE_APPROVAL_WEBHOOK_FILE=/config/secrets/approval-webhook",
+		"# DESCLES_EDGE_PUBLIC_URL=https://descles.internal",
+		"# Map model names agents request to names your provider serves (requested=served, comma-separated):",
+		"# DESCLES_MODEL_ALIASES=claude-sonnet-4-5=deepseek-flash",
 	}
 	if o.OrgContext {
 		env = append(env,

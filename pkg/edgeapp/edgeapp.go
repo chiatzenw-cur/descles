@@ -142,7 +142,20 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 			return err
 		}
 	}
-	metered := &edge.MeteredStore{Storage: local, Outbox: queue, EdgeID: edgeID, Filter: reportFilter(keyedProviders, cfg.AnthropicAPIKey != "")}
+	aliases, err := edge.ParseModelAliases(os.Getenv("DESCLES_MODEL_ALIASES"))
+	if err != nil {
+		_ = local.Close()
+		if queue != nil {
+			_ = queue.Close()
+		}
+		return fmt.Errorf("DESCLES_MODEL_ALIASES: %w", err)
+	}
+	var aliasTargets []string
+	for from, to := range aliases {
+		aliasTargets = append(aliasTargets, to)
+		logger.Info("model alias", "requested", from, "sent_upstream", to)
+	}
+	metered := &edge.MeteredStore{Storage: local, Outbox: queue, EdgeID: edgeID, Filter: reportFilter(keyedProviders, cfg.AnthropicAPIKey != "", aliasTargets)}
 	defer metered.Close()
 	h := proxy.New(cfg, provider.NewRegistry(keyedProviders), holder, metered, logger)
 	if bundle != nil {
@@ -230,6 +243,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	defer closeApprovals()
 	if admin != nil {
 		mcp.Approvals = admin.Store
+		if mcp.Notifier, err = approvalNotifier(logger); err != nil {
+			closeMCP()
+			return err
+		}
 		admin.Traces = metered
 		admin.Info = func() map[string]any {
 			info := map[string]any{"edge_id": edgeID, "mode": "standalone", "policy_sha256": policyDigest(holder)}
@@ -242,7 +259,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	defer closeMCP()
 	inner := h.Routes()
 	mux := http.NewServeMux()
-	guard := guardWith(bundle, metered, queue, inner)
+	guard := guardWith(bundle, metered, queue, edge.AliasModels(aliases, inner))
 	mux.Handle("/v1/", guard)
 	mux.Handle("/anthropic/v1/", guard)
 	mux.Handle("POST /mcp/{connector}", guardWith(bundle, metered, queue, mcp))
@@ -435,7 +452,7 @@ func Main(plugins ...Plugin) int {
 // exact (non-wildcard) model names in the provider config, and
 // DESCLES_EDGE_REPORT_MODELS (comma-separated). Everything else is reported
 // as "other" and kept verbatim in the local record.
-func reportFilter(providers []provider.Config, anthropic bool) *edge.ReportFilter {
+func reportFilter(providers []provider.Config, anthropic bool, adminModels []string) *edge.ReportFilter {
 	var models, names []string
 	for m := range pricing.All() {
 		if !strings.HasPrefix(m, "_") {
@@ -453,6 +470,7 @@ func reportFilter(providers []provider.Config, anthropic bool) *edge.ReportFilte
 	if anthropic {
 		names = append(names, "anthropic")
 	}
+	models = append(models, adminModels...) // model alias targets, set by the edge admin
 	models = append(models, strings.Split(os.Getenv("DESCLES_EDGE_REPORT_MODELS"), ",")...)
 	return edge.NewReportFilter(models, names)
 }
@@ -510,4 +528,26 @@ func policyDigest(h *policy.Holder) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// approvalNotifier posts new approval requests to the webhook in
+// DESCLES_EDGE_APPROVAL_WEBHOOK(_FILE) (Slack-compatible). Links point at
+// DESCLES_EDGE_PUBLIC_URL. Arguments are left out unless
+// DESCLES_EDGE_APPROVAL_WEBHOOK_ARGS=true, because the webhook is outside
+// the edge.
+func approvalNotifier(logger *slog.Logger) (*edge.ApprovalNotifier, error) {
+	hook, err := edgeSecret("DESCLES_EDGE_APPROVAL_WEBHOOK")
+	if err != nil || hook == "" {
+		return nil, err
+	}
+	if err := edge.ValidateWebhook(hook); err != nil {
+		return nil, err
+	}
+	n := &edge.ApprovalNotifier{URL: hook, AdminURL: strings.TrimRight(os.Getenv("DESCLES_EDGE_PUBLIC_URL"), "/"), Logger: logger,
+		IncludeArgs: os.Getenv("DESCLES_EDGE_APPROVAL_WEBHOOK_ARGS") == "true"}
+	if n.IncludeArgs {
+		logger.Warn("approval notifications include call arguments; they leave the edge to the webhook")
+	}
+	logger.Info("approval notifications enabled", "include_args", n.IncludeArgs)
+	return n, nil
 }

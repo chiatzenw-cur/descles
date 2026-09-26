@@ -215,3 +215,50 @@ func TestApprovalsDisabledFailClosed(t *testing.T) {
 		t.Fatalf("admin API served without a token: %d", rec.Code)
 	}
 }
+
+func TestApprovalNotifiesOncePerRequestWithoutArguments(t *testing.T) {
+	r := newApprovalRig(t)
+	got := make(chan map[string]any, 4)
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		got <- body
+	}))
+	defer hook.Close()
+	r.g.Notifier = &ApprovalNotifier{URL: hook.URL, AdminURL: "https://descles.internal"}
+	text, _ := r.refund(777)
+	id := r.requested(text)
+	r.refund(777) // retry while pending: same request, no second notice
+	var msg map[string]any
+	select {
+	case msg = <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no notification")
+	}
+	raw, _ := json.Marshal(msg)
+	if !strings.Contains(msg["text"].(string), id) || !strings.Contains(string(raw), "https://descles.internal/admin/") || !strings.Contains(string(raw), "stripe.refund") {
+		t.Fatalf("notice: %s", raw)
+	}
+	if strings.Contains(string(raw), "777") || strings.Contains(string(raw), "ch_1") {
+		t.Fatalf("arguments must stay on the edge by default: %s", raw)
+	}
+	select {
+	case extra := <-got:
+		t.Fatalf("a retry of a pending call notified again: %v", extra)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := ValidateWebhook("http://hooks.example.com/x"); err == nil {
+		t.Fatal("plain http webhook to a remote host accepted")
+	}
+	// Opt-in: arguments included.
+	r.g.Notifier.IncludeArgs = true
+	r.refund(778)
+	select {
+	case msg = <-got:
+		if raw, _ := json.Marshal(msg); !strings.Contains(string(raw), "778") {
+			t.Fatalf("IncludeArgs: %s", raw)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no notification")
+	}
+}

@@ -47,6 +47,8 @@ descles connect claude-code --edge http://127.0.0.1:8081 --key <agent key printe
 See [docs/CONNECT-AGENTS.md](docs/CONNECT-AGENTS.md) for Codex, Hermes and other agents, and for the
 tool names policies match on.
 
+To check that a machine's agents really go through the edge, run `descles doctor --edge <url>`.
+
 To check that a release is what this source builds (rebuild and compare, provenance, cosign), see
 [docs/VERIFY-RELEASE.md](docs/VERIFY-RELEASE.md).
 

@@ -146,6 +146,40 @@ still stops it. Arguments are shown only from the edge and erased once the appro
 For Claude Code's native tools, `require_approval` becomes Claude Code's own permission prompt: the
 person at the keyboard approves.
 
+## Check a machine: `descles doctor`
+
+```bash
+descles doctor --edge http://127.0.0.1:8081 [--admin-token-file my-edge/config/secrets/admin-token]
+```
+
+It checks, in order: the edge is reachable, the agent key is accepted, and tool-check answers. With the
+admin token, it also sends a test record with a trace id and playbook version and reads it back from
+the edge. It then checks the Claude Code settings (model traffic to this edge, both hooks, the key helper,
+including Windows quoting), the Codex profile, and shell variables such as `ANTHROPIC_BASE_URL` that
+would bypass the edge. Every failure says how to fix it, and the exit status is 1 if anything failed.
+
+## Tag work with a playbook version
+
+To compare configurations later (`descles-eval analyze`), each machine or team states which
+configuration it runs:
+
+```bash
+descles connect claude-code --edge ... --key ... --playbook-version engineering@2026-09-26.1
+```
+
+This adds `X-Descles-Playbook-Version` to every model request and to every hook call. Your own custom
+headers are kept. The edge records the label locally (letters, digits and `._-:@+/` only). Other
+harnesses send the same header, and trace pipelines can carry it as `descles.playbook_version`.
+
+## Model names
+
+If agents ask for model names the edge's provider does not serve (for example a Hermes or Claude Code
+config naming a model the upstream rejects), map them on the edge instead of editing every harness:
+
+```
+DESCLES_MODEL_ALIASES=deepseek-v4-flash=deepseek-flash,claude-sonnet-4-5=deepseek-v4-pro
+```
+
 ## One policy for every harness
 
 Tool names are normalized, so one rule covers Claude Code's `Bash`, Codex's `shell` and Hermes's

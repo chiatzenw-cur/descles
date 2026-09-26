@@ -176,6 +176,7 @@ type TraceRecord struct {
 	Model       string    `json:"model,omitempty"`
 	Tool        string    `json:"tool,omitempty"`       // reported (canonical) name
 	ToolLocal   string    `json:"tool_local,omitempty"` // name as the client sent it
+	Playbook    string    `json:"playbook_version,omitempty"`
 	Decision    string    `json:"policy_decision,omitempty"`
 	InputToks   *int      `json:"input_tokens,omitempty"`
 	OutputToks  *int      `json:"output_tokens,omitempty"`
@@ -200,7 +201,7 @@ func (a *ApprovalAdmin) trace(w http.ResponseWriter, r *http.Request) {
 	for _, s := range t.Spans {
 		rec := TraceRecord{SpanType: s.SpanType, Status: s.Status, StartedAt: s.StartedAt, EndedAt: s.EndedAt, ErrorType: s.ErrorType,
 			Model: stringAttr(s, tracing.AttrModel), Tool: stringAttr(s, tracing.AttrTool), ToolLocal: stringAttr(s, attrToolLocal),
-			Decision: stringAttr(s, tracing.AttrPolicy), ToolCallsIn: intAttr(s, tracing.AttrToolCalls)}
+			Decision: stringAttr(s, tracing.AttrPolicy), ToolCallsIn: intAttr(s, tracing.AttrToolCalls), Playbook: stringAttr(s, tracing.AttrPlaybook)}
 		// Absent counts stay absent: an unknown cost is not a zero cost.
 		if _, ok := s.Attributes[tracing.AttrInputToks]; ok {
 			v := intAttr(s, tracing.AttrInputToks)

@@ -19,6 +19,8 @@ Standalone edges (`DESCLES_EDGE_REPORT_URL=off`) send nothing to Descles.
 | Native tool input from harness hooks (shell commands, file paths) | The edge's `/v1/tool-check`, used for the policy decision | Not stored. Only the normalized tool name and the decision are recorded. | Never |
 | Tool evidence in model requests (tools the model called and their results) | — | Tool name, resource (file path or URL), operation, result length and SHA-256. The first ~180 characters of the result are kept only when `DESCLES_LOG_PAYLOADS=true`. | Never |
 | Arguments of calls that need a human approval | The approver's browser or CLI, from the edge's `/admin/` (your network) | In the local approvals database while pending or approved; erased when the approval is used, denied or expires. The SHA-256 digest, tool, agent, approver name and times remain. | Never |
+| Approval notifications (optional) | The webhook the edge admin configures (e.g. Slack) | — | Never. The notice carries the tool name, agent id, approval id, argument digest and a link to `/admin/`. Arguments are included only with `DESCLES_EDGE_APPROVAL_WEBHOOK_ARGS=true` |
+| Playbook/config version (`X-Descles-Playbook-Version`) | Recorded with local model and tool records, for evaluation grouping | Yes, as a label restricted to letters, digits and `._-:@+/` | Never (not part of the metadata contract) |
 | Agent virtual keys | Developer machine → your edge | SHA-256 hash only | Hash only, in managed mode, where the control plane issued the key |
 | Process logs (stdout) | Wherever you ship logs | Method, path, status, trace header, duration, error messages. No request or response bodies. | Never |
 

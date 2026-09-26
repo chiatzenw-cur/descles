@@ -612,6 +612,7 @@ func (h *Handler) forwardLLMCall(
 			Attributes: map[string]any{
 				tracing.AttrProvider:   pname,
 				tracing.AttrModel:      reqDTO.Model,
+				tracing.AttrPlaybook:   meta.identity.PlaybookVersion,
 				tracing.AttrPolicy:     string(policy.Deny),
 				"policy_reason":        "budget_daily_usd_exceeded",
 				"policy_remaining_usd": 0,
@@ -640,6 +641,7 @@ func (h *Handler) forwardLLMCall(
 		Attributes: map[string]any{
 			tracing.AttrProvider: pname,
 			tracing.AttrModel:    reqDTO.Model,
+			tracing.AttrPlaybook: meta.identity.PlaybookVersion,
 		},
 	}
 	if ev := h.evidence(extractToolEvidence(body)); len(ev) > 0 {

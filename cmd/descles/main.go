@@ -12,12 +12,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -39,7 +41,8 @@ func usage() error {
   descles key [--file PATH]
   descles edge init [--dir DIR] [--mode standalone|hosted] [--yes]
   descles edge up [--dir DIR]
-  descles approvals list | approve ID | deny ID  --edge URL --admin-token-file PATH [--by NAME]`)
+  descles approvals list | approve ID | deny ID  --edge URL --admin-token-file PATH [--by NAME]
+  descles doctor --edge URL [--admin-token-file PATH]   (check that agents here go through the edge)`)
 }
 
 func run(args []string) error {
@@ -62,6 +65,8 @@ func run(args []string) error {
 		return runHook(args[2], args[3:])
 	case "approvals":
 		return runApprovals(args[1:])
+	case "doctor":
+		return runDoctor(args[1:])
 	case "edge":
 		if len(args) < 2 {
 			return usage()
@@ -97,6 +102,7 @@ func runConnect(target string, args []string) error {
 	scope := fs.String("scope", "user", "claude-code: user (~/.claude/settings.json) or project (.claude/settings.local.json)")
 	model := fs.String("model", "", "codex: default model for the descles profile")
 	dryRun := fs.Bool("dry-run", false, "print what would change without writing")
+	playbook := fs.String("playbook-version", "", "claude-code: stamp requests with this playbook/config version (for evaluation grouping)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -129,7 +135,7 @@ func runConnect(target string, args []string) error {
 
 	switch target {
 	case "claude-code":
-		return connectClaude(base, *key, keyFile, *scope, connectors, *dryRun)
+		return connectClaude(base, *key, keyFile, *scope, connectors, *dryRun, *playbook)
 	case "codex":
 		return connectCodex(base, *model, connectors, *dryRun)
 	case "openai", "hermes":
@@ -139,7 +145,7 @@ func runConnect(target string, args []string) error {
 	return fmt.Errorf("unknown target %q (claude-code, codex, openai)", target)
 }
 
-func connectClaude(base, key, keyFile, scope string, connectors []string, dryRun bool) error {
+func connectClaude(base, key, keyFile, scope string, connectors []string, dryRun bool, playbook string) error {
 	var path, mcpScope string
 	switch scope {
 	case "user":
@@ -164,6 +170,9 @@ func connectClaude(base, key, keyFile, scope string, connectors []string, dryRun
 	updated, err := connect.ClaudeSettings(existing, base, self, keyFile)
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
+	}
+	if updated, err = connect.SetPlaybookVersion(updated, playbook); err != nil {
+		return err
 	}
 	cmds := connect.ClaudeMCPCommands(base, key, connectors, mcpScope)
 	if dryRun {
@@ -290,5 +299,64 @@ func runHermesHook(args []string) error {
 		fmt.Fprintln(os.Stderr, res.Stderr)
 	}
 	os.Exit(res.Code)
+	return nil
+}
+
+// runDoctor checks, in order, everything an agent needs to go through the
+// edge, and says how to fix what is wrong. Exit status 1 if anything failed.
+func runDoctor(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	edgeURL := fs.String("edge", os.Getenv("DESCLES_EDGE_URL"), "edge base URL")
+	def, _ := connect.KeyFile()
+	keyFile := fs.String("key-file", def, "agent key file")
+	adminFile := fs.String("admin-token-file", "", "edge admin token file (enables the trace round-trip check)")
+	claudeSettings := fs.String("claude-settings", "", "Claude Code settings.json (default ~/.claude/settings.json)")
+	codexConfig := fs.String("codex-config", "", "Codex config.toml (default ~/.codex/config.toml)")
+	asJSON := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	base, err := connect.NormalizeURL(*edgeURL)
+	if err != nil {
+		return err
+	}
+	key, err := connect.LoadKey(*keyFile)
+	if err != nil {
+		return err
+	}
+	admin := ""
+	if *adminFile != "" {
+		b, err := os.ReadFile(*adminFile)
+		if err != nil {
+			return err
+		}
+		admin = strings.TrimSpace(string(b))
+	}
+	home, _ := os.UserHomeDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	checks := connect.Doctor(ctx, connect.DoctorOptions{Edge: connect.Edge{URL: base, Key: key}, AdminToken: admin, Home: home,
+		ClaudeSettings: *claudeSettings, CodexConfig: *codexConfig, KeyFile: *keyFile, GOOS: runtime.GOOS})
+	failed := false
+	if *asJSON {
+		b, _ := json.MarshalIndent(checks, "", "  ")
+		fmt.Println(string(b))
+	}
+	marks := map[string]string{connect.CheckOK: "ok  ", connect.CheckWarn: "warn", connect.CheckFail: "FAIL", connect.CheckSkip: "skip"}
+	for _, c := range checks {
+		if c.Status == connect.CheckFail {
+			failed = true
+		}
+		if *asJSON {
+			continue
+		}
+		fmt.Printf("[%s] %-32s %s\n", marks[c.Status], c.Name, c.Detail)
+		if c.Fix != "" && c.Status != connect.CheckOK && c.Status != connect.CheckSkip {
+			fmt.Printf("       fix: %s\n", c.Fix)
+		}
+	}
+	if failed {
+		os.Exit(1)
+	}
 	return nil
 }

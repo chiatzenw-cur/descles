@@ -113,25 +113,27 @@ func (s *ApprovalStore) expire(ctx context.Context) error {
 
 // Request returns the pending approval for this exact call, creating one if
 // there is none, so an agent retrying while it waits does not flood approvers.
-func (s *ApprovalStore) Request(ctx context.Context, a Approval, args json.RawMessage) (Approval, error) {
+// created reports whether this call opened a new request (and should notify).
+func (s *ApprovalStore) Request(ctx context.Context, a Approval, args json.RawMessage) (out Approval, created bool, err error) {
 	if err := s.expire(ctx); err != nil {
-		return Approval{}, err
+		return Approval{}, false, err
 	}
 	var id string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM edge_approvals WHERE org_id=? AND agent_id=? AND tool=? AND args_digest=? AND state=? ORDER BY created_at LIMIT 1`,
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM edge_approvals WHERE org_id=? AND agent_id=? AND tool=? AND args_digest=? AND state=? ORDER BY created_at LIMIT 1`,
 		a.OrgID, a.AgentID, a.Tool, a.ArgsDigest, ApprovalPending).Scan(&id)
 	if err == nil {
-		return s.Get(ctx, id)
+		existing, err := s.Get(ctx, id)
+		return existing, false, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return Approval{}, err
+		return Approval{}, false, err
 	}
 	now := s.now()
 	a.ID, a.State, a.CreatedAt, a.ExpiresAt = approvalID(), ApprovalPending, now, now.Add(s.PendingTTL)
 	_, err = s.db.ExecContext(ctx, `INSERT INTO edge_approvals(id, org_id, edge_id, agent_id, user_id, tool, args_digest, args, state, created_at, expires_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, a.ID, a.OrgID, a.EdgeID, a.AgentID, a.UserID, a.Tool, a.ArgsDigest, string(args), a.State, s.ts(a.CreatedAt), s.ts(a.ExpiresAt))
 	a.Args = args
-	return a, err
+	return a, err == nil, err
 }
 
 // Decide records a human decision on a pending approval. An approval must

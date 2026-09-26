@@ -69,6 +69,13 @@ func (e Edge) do(ctx context.Context, method, path string, body any, out any) er
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	pv, _ := ctx.Value(playbookKey{}).(string)
+	if pv == "" {
+		pv = strings.TrimSpace(os.Getenv("DESCLES_PLAYBOOK_VERSION"))
+	}
+	if pv != "" {
+		req.Header.Set("X-Descles-Playbook-Version", pv)
+	}
 	if tid, ok := ctx.Value(traceKey{}).(string); ok && tid != "" {
 		req.Header.Set("X-Descles-Trace", tid)
 	}
@@ -91,6 +98,14 @@ func (e Edge) do(ctx context.Context, method, path string, body any, out any) er
 }
 
 type traceKey struct{}
+
+type playbookKey struct{}
+
+// WithPlaybook tags edge requests with a playbook/config version, overriding
+// DESCLES_PLAYBOOK_VERSION.
+func WithPlaybook(ctx context.Context, version string) context.Context {
+	return context.WithValue(ctx, playbookKey{}, version)
+}
 
 // WithTrace tags edge requests with a trace id so the edge groups one
 // session's calls into one trace. DESCLES_TRACE_ID, when set (for example by

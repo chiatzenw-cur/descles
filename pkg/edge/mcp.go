@@ -19,6 +19,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/chiatzenw-cur/descles/pkg/identity"
 	"github.com/chiatzenw-cur/descles/pkg/mcpwire"
 	"github.com/chiatzenw-cur/descles/pkg/policy"
 	"github.com/chiatzenw-cur/descles/pkg/tracing"
@@ -116,9 +117,10 @@ type MCPGateway struct {
 		PutSpan(context.Context, *tracing.Span) error
 	}
 	EdgeID     string
-	Approvals  *ApprovalStore // nil: calls that need approval fail closed
-	Extensions []Extension    // served at /mcp/<id>; none in the open-core edge
-	Observers  []Observer     // see successful tool results, on the edge
+	Approvals  *ApprovalStore    // nil: calls that need approval fail closed
+	Notifier   *ApprovalNotifier // tells approvers a call is waiting; nil: no notices
+	Extensions []Extension       // served at /mcp/<id>; none in the open-core edge
+	Observers  []Observer        // see successful tool results, on the edge
 	Client     *http.Client
 	Logger     *slog.Logger
 }
@@ -306,10 +308,13 @@ func (g *MCPGateway) gate(r *http.Request, started time.Time, orgID, userID, age
 		if id != "" {
 			return "", true, id
 		}
-		a, err := g.Approvals.Request(r.Context(), Approval{OrgID: orgID, EdgeID: g.EdgeID, AgentID: agentID, UserID: userID, Tool: full, ArgsDigest: digest}, args)
+		a, created, err := g.Approvals.Request(r.Context(), Approval{OrgID: orgID, EdgeID: g.EdgeID, AgentID: agentID, UserID: userID, Tool: full, ArgsDigest: digest}, args)
 		g.record(r, started, userID, agentID, full, policy.RequireApproval, "error")
 		if err != nil {
 			return "Approval could not be requested; the call was not executed.", false, ""
+		}
+		if created {
+			g.Notifier.Notify(a)
 		}
 		return fmt.Sprintf("Human approval required for %s (approval %s). It was not executed. After a person approves it, repeat exactly the same call with the same arguments within %s; changed arguments need a new approval.",
 			full, a.ID, g.Approvals.UseWindow), false, ""
@@ -486,7 +491,8 @@ func (g *MCPGateway) record(r *http.Request, started time.Time, userID, agentID,
 		SpanID: tracing.NewSpanID(), TraceID: traceID, SpanType: tracing.SpanTypeTool,
 		StartedAt: started, EndedAt: time.Now().UTC(), ActorType: "agent", ActorID: agentID,
 		AgentID: agentID, UserID: userID, Status: status,
-		Attributes: map[string]any{tracing.AttrTool: g.reportableTool(tool), tracing.AttrPolicy: string(decision), attrToolLocal: truncate(tool, 200)},
+		Attributes: map[string]any{tracing.AttrTool: g.reportableTool(tool), tracing.AttrPolicy: string(decision), attrToolLocal: truncate(tool, 200),
+			tracing.AttrPlaybook: identity.CleanPlaybookVersion(r.Header.Get(identity.HeaderPlaybook))},
 	}
 	if err := g.Spans.PutSpan(r.Context(), span); err != nil && g.Logger != nil {
 		g.Logger.Error("tool call metering failed", "tool", g.reportableTool(tool), "err", err)

@@ -3,6 +3,7 @@ package edge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -150,5 +151,26 @@ func TestRecordSurvivesClientDisconnect(t *testing.T) {
 	trace, err := local.GetTrace(context.Background(), "t")
 	if err != nil || len(trace.Spans) != 1 {
 		t.Fatalf("local record: %v %v", trace, err)
+	}
+}
+
+// The playbook version travels with tool records (locally) so evaluations
+// can group by it, and only as a restricted label.
+func TestPlaybookVersionIsRecordedAsALabelOnly(t *testing.T) {
+	rec := &spanLog{}
+	g := &MCPGateway{Config: &MCPConfig{}, Policy: policy.NewHolder(policy.AllowAll()), Spans: rec}
+	for _, v := range []string{"engineering@2026-09-26.1+sha256:ab12", "v1; DROP TABLE customers"} {
+		req := httptest.NewRequest("POST", "/v1/tool-report", nil)
+		req.Header.Set("X-Descles-Playbook-Version", v)
+		g.record(req, time.Now(), "u", "a", "local.bash", policy.Allow, "ok")
+	}
+	if got := rec.spans[0].Attributes[tracing.AttrPlaybook]; got != "engineering@2026-09-26.1+sha256:ab12" {
+		t.Fatalf("valid label: %v", got)
+	}
+	if got := rec.spans[1].Attributes[tracing.AttrPlaybook]; got != "" {
+		t.Fatalf("free text must not be recorded as a version: %v", got)
+	}
+	if m := FromSpan("e1", rec.spans[0]); strings.Contains(fmt.Sprint(m), "engineering@") {
+		t.Fatal("the playbook label stays local; it is not in the reported metadata")
 	}
 }

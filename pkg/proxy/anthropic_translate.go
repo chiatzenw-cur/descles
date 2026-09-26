@@ -271,7 +271,7 @@ func (h *Handler) newAnthropicSpan(meta requestMeta, base, model string) *tracin
 		ProjectID:      meta.identity.ProjectID,
 		ResourceType:   "llm",
 		ResourceID:     base,
-		Attributes:     map[string]any{tracing.AttrProvider: "anthropic", tracing.AttrModel: model},
+		Attributes:     map[string]any{tracing.AttrProvider: "anthropic", tracing.AttrModel: model, tracing.AttrPlaybook: meta.identity.PlaybookVersion},
 	}
 }
 

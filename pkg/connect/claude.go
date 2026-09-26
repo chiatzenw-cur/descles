@@ -204,3 +204,46 @@ func WriteFileWithBackup(path string, data []byte) error {
 	}
 	return os.WriteFile(path, data, 0o600)
 }
+
+// SetPlaybookVersion stamps Claude Code settings with the playbook/config
+// version this machine runs, so every model request (custom header) and every
+// hook call (environment) carries it. An empty version removes the stamp.
+func SetPlaybookVersion(settingsJSON []byte, version string) ([]byte, error) {
+	settings := map[string]any{}
+	if err := json.Unmarshal(settingsJSON, &settings); err != nil {
+		return nil, err
+	}
+	env, _ := settings["env"].(map[string]any)
+	if env == nil {
+		env = map[string]any{}
+	}
+	// Keep the user's own custom headers; replace only ours.
+	var headers []string
+	if cur, _ := env["ANTHROPIC_CUSTOM_HEADERS"].(string); cur != "" {
+		for _, line := range strings.Split(cur, "\n") {
+			if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(strings.ToLower(line), "x-descles-playbook-version:") {
+				headers = append(headers, line)
+			}
+		}
+	}
+	if version == "" {
+		delete(env, "DESCLES_PLAYBOOK_VERSION")
+	} else {
+		if bad := strings.Trim(version, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-:@+/"); bad != "" || len(version) > 120 {
+			return nil, errors.New("playbook version: use 1-120 letters, digits and . _ - : @ + /")
+		}
+		env["DESCLES_PLAYBOOK_VERSION"] = version
+		headers = append(headers, "X-Descles-Playbook-Version: "+version)
+	}
+	if len(headers) == 0 {
+		delete(env, "ANTHROPIC_CUSTOM_HEADERS")
+	} else {
+		env["ANTHROPIC_CUSTOM_HEADERS"] = strings.Join(headers, "\n")
+	}
+	settings["env"] = env
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}

@@ -225,3 +225,36 @@ func TestShellQuoteWorksForBothWindowsShells(t *testing.T) {
 		t.Fatalf("posix: %s", got)
 	}
 }
+
+func TestPlaybookVersionStamp(t *testing.T) {
+	base, _ := ClaudeSettings(nil, "https://edge", "d", "k")
+	out, err := SetPlaybookVersion(base, "eng@2026-09-26.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s map[string]any
+	_ = json.Unmarshal(out, &s)
+	env := s["env"].(map[string]any)
+	if env["DESCLES_PLAYBOOK_VERSION"] != "eng@2026-09-26.1" || env["ANTHROPIC_CUSTOM_HEADERS"] != "X-Descles-Playbook-Version: eng@2026-09-26.1" || env["ANTHROPIC_BASE_URL"] != "https://edge/anthropic" {
+		t.Fatalf("env: %+v", env)
+	}
+	if _, err := SetPlaybookVersion(base, "v1 with spaces"); err == nil {
+		t.Fatal("free text accepted as a version")
+	}
+	cleared, _ := SetPlaybookVersion(out, "")
+	if strings.Contains(string(cleared), "Playbook") {
+		t.Fatal("empty version must remove the stamp")
+	}
+}
+
+func TestPlaybookStampKeepsUsersOwnHeaders(t *testing.T) {
+	base, _ := ClaudeSettings([]byte(`{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Team: payments"}}`), "https://edge", "d", "k")
+	out, _ := SetPlaybookVersion(base, "v2")
+	if !strings.Contains(string(out), `X-Team: payments\nX-Descles-Playbook-Version: v2`) {
+		t.Fatalf("user header lost: %s", out)
+	}
+	cleared, _ := SetPlaybookVersion(out, "")
+	if !strings.Contains(string(cleared), "X-Team: payments") || strings.Contains(string(cleared), "Playbook") {
+		t.Fatalf("clearing must remove only our header: %s", cleared)
+	}
+}
