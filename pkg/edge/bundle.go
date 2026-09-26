@@ -51,8 +51,13 @@ func SignBundle(payload BundlePayload, private ed25519.PrivateKey) (SignedBundle
 	return SignedBundle{Payload: payload, Signature: hex.EncodeToString(ed25519.Sign(private, append([]byte(bundleDomain), message...)))}, nil
 }
 
+// MaxBundleLease is the longest validity an edge accepts for a bundle: the
+// longest a disconnected edge keeps honouring grants revoked after its last
+// refresh. The control plane must not issue longer leases.
+const MaxBundleLease = 20 * time.Minute
+
 func VerifyBundle(bundle SignedBundle, public ed25519.PublicKey, orgID string, now time.Time) error {
-	if bundle.Payload.Version != 1 || bundle.Payload.OrgID != orgID || bundle.Payload.IssuedAt.After(now.Add(5*time.Minute)) || !now.Before(bundle.Payload.ExpiresAt) || bundle.Payload.ExpiresAt.After(bundle.Payload.IssuedAt.Add(20*time.Minute)) {
+	if bundle.Payload.Version != 1 || bundle.Payload.OrgID != orgID || bundle.Payload.IssuedAt.After(now.Add(5*time.Minute)) || !now.Before(bundle.Payload.ExpiresAt) || bundle.Payload.ExpiresAt.After(bundle.Payload.IssuedAt.Add(MaxBundleLease)) {
 		return fmt.Errorf("edge bundle version, organization or validity window is invalid")
 	}
 	signature, err := hex.DecodeString(bundle.Signature)
@@ -89,9 +94,12 @@ type BundleState struct {
 	PublicKey ed25519.PublicKey
 	CachePath string
 	Policy    *policy.Holder
-	current   SignedBundle
-	byHash    map[string]Grant
-	byAgent   map[string]Grant
+	// Floor is the edge administrator's local policy. Every bundle's policy
+	// is bounded by it: the control plane can tighten it but never loosen it.
+	Floor   *policy.Policy
+	current SignedBundle
+	byHash  map[string]Grant
+	byAgent map[string]Grant
 }
 
 func NewBundleState(orgID string, public ed25519.PublicKey, cachePath string) *BundleState {
@@ -127,7 +135,7 @@ func (s *BundleState) Apply(bundle SignedBundle) error {
 	}
 	s.mu.Lock()
 	s.current, s.byHash, s.byAgent = bundle, byHash, byAgent
-	s.Policy.Set(compiled)
+	s.Policy.Set(compiled.WithFloor(s.Floor))
 	s.mu.Unlock()
 	return nil
 }

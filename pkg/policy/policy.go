@@ -60,7 +60,7 @@ type Config struct {
 // needs buffering when this is true, and the decision layer honours groups
 // (agent > group > defaults), so groups must be inspected too: a rule configured
 // only on a group otherwise let tools stream through unenforced.
-func (p *Policy) HasToolRules() bool {
+func (p *Policy) ownHasToolRules() bool {
 	if hasRules(p.cfg.Defaults) {
 		return true
 	}
@@ -89,6 +89,8 @@ func hasRules(a AgentPolicy) bool {
 // Policy is an immutable compiled policy.
 type Policy struct {
 	cfg Config
+	// floor, when set, can only make decisions stricter (see WithFloor).
+	floor *Policy
 }
 
 // FromJSON parses a policy from a JSON string. Empty input yields an all-allow
@@ -111,24 +113,24 @@ func AllowAll() *Policy { return &Policy{} }
 // BudgetFor returns the daily USD budget for an agent (agent-specific first,
 // then defaults). ok is false when no USD cap is in force: nothing configured,
 // or a token-only budget where USD is not the governing unit.
-func (p *Policy) BudgetFor(agent string) (dailyUSD float64, ok bool) {
+func (p *Policy) ownBudgetFor(agent string) (dailyUSD float64, ok bool) {
 	return budgetUSD(p.budgetForAgent(agent))
 }
 
 // TokenBudgetFor returns the daily token budget for an agent (agent-specific
 // first, then defaults). ok is false when no token cap is configured.
-func (p *Policy) TokenBudgetFor(agent string) (dailyTokens int64, ok bool) {
+func (p *Policy) ownTokenBudgetFor(agent string) (dailyTokens int64, ok bool) {
 	return budgetTokens(p.budgetForAgent(agent))
 }
 
 // BudgetForUser returns the daily USD budget for an employee (user-specific
 // first, then defaults) — legacy user dimension.
-func (p *Policy) BudgetForUser(user string) (dailyUSD float64, ok bool) {
+func (p *Policy) ownBudgetForUser(user string) (dailyUSD float64, ok bool) {
 	return budgetUSD(p.budgetForUser(user))
 }
 
 // TokenBudgetForUser returns the daily token budget for an employee.
-func (p *Policy) TokenBudgetForUser(user string) (dailyTokens int64, ok bool) {
+func (p *Policy) ownTokenBudgetForUser(user string) (dailyTokens int64, ok bool) {
 	return budgetTokens(p.budgetForUser(user))
 }
 
@@ -202,7 +204,7 @@ func (p *Policy) ToolDecisionIn(agent, group, tool string) Decision {
 // The first layer that yields any matching rule wins, so an explicit allow at
 // a higher layer overrides a lower layer's deny. args may be nil when unknown;
 // only arg rules with an empty Args spec match then.
-func (p *Policy) ToolDecisionInArgs(agent, group, tool string, args map[string]any) Decision {
+func (p *Policy) ownToolDecisionInArgs(agent, group, tool string, args map[string]any) Decision {
 	if d, ok := decisionForLayer(p.cfg.Agents[agent], tool, args); ok {
 		return d
 	}
@@ -230,7 +232,7 @@ func decisionForLayer(ap AgentPolicy, tool string, args map[string]any) (Decisio
 // rule that could match this tool. Streaming relays use it to defer a
 // name-only "allow" until arguments are known, because a relayed function call
 // cannot be retracted once emitted.
-func (p *Policy) HasArgRulesFor(agent, group, tool string) bool {
+func (p *Policy) ownHasArgRulesFor(agent, group, tool string) bool {
 	aps := []AgentPolicy{p.cfg.Agents[agent], p.cfg.Defaults}
 	if group != "" {
 		aps = append(aps, p.cfg.Groups[group])
@@ -384,7 +386,7 @@ type ToolStatus struct {
 	HasArgRules bool     `json:"has_arg_rules"`
 }
 
-func (p *Policy) ToolStatus(tool string) ToolStatus {
+func (p *Policy) ownToolStatus(tool string) ToolStatus {
 	var st ToolStatus
 	ap := p.cfg.Defaults
 	for _, rule := range ap.ArgTools {

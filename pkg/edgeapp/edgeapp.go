@@ -100,6 +100,18 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 			return fmt.Errorf("signed bundle mode requires org ID, Ed25519 public key and cache path")
 		}
 		bundle = edge.NewBundleState(orgID, ed25519.PublicKey(pub), cachePath)
+		// The local policy file bounds the control plane's policy: the hosted
+		// side can tighten it but never loosen what this edge denies, holds
+		// for approval or caps.
+		if cfg.PolicyFile != "" {
+			floor, err := policy.LoadFile(cfg.PolicyFile)
+			if err != nil {
+				return fmt.Errorf("local policy floor: %w", err)
+			}
+			bundle.Floor = floor
+			bundle.Policy.Set(policy.AllowAll().WithFloor(floor))
+			logger.Info("local policy is a floor under the control plane's policy", "file", cfg.PolicyFile)
+		}
 		if err := bundle.LoadCache(); err != nil {
 			logger.Info("no usable cached edge bundle", "err", err)
 		}

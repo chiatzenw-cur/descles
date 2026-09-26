@@ -63,3 +63,41 @@ func TestSignedBundlePinsPolicyAndGrants(t *testing.T) {
 		t.Fatal("cross-org bundle accepted")
 	}
 }
+
+// The control plane can tighten the edge's local policy but never loosen it,
+// on every refresh.
+func TestBundlePolicyIsBoundedByTheLocalFloor(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor, err := policy.FromJSON(`{"defaults":{"tools":{"github.delete_repository":"deny"},"require_approval":["stripe.refund"]}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewBundleState("org_1", public, filepath.Join(t.TempDir(), "bundle.json"))
+	state.Floor = floor
+	for _, raw := range []string{
+		`{"defaults":{"tools":{"github.delete_repository":"allow","stripe.refund":"allow"}}}`,
+		`{"agents":{"bot":{"tools":{"github.delete_repository":"allow"}}},"defaults":{"tools":{"crm.export":"deny"}}}`,
+	} {
+		now := time.Now().UTC()
+		signed, err := SignBundle(BundlePayload{Version: 1, OrgID: "org_1", Policy: json.RawMessage(raw), IssuedAt: now, ExpiresAt: now.Add(10 * time.Minute)}, private)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Apply(signed); err != nil {
+			t.Fatal(err)
+		}
+		p := state.Policy.Get()
+		if d := p.ToolDecisionInArgs("bot", "", "github.delete_repository", nil); d != policy.Deny {
+			t.Errorf("bundle %s loosened the floor: delete_repository is %s", raw, d)
+		}
+		if d := p.ToolDecisionInArgs("a", "", "stripe.refund", nil); d != policy.RequireApproval {
+			t.Errorf("bundle %s loosened the floor: refund is %s", raw, d)
+		}
+	}
+	if d := state.Policy.Get().ToolDecisionInArgs("a", "", "crm.export", nil); d != policy.Deny {
+		t.Errorf("the bundle's own tightening was lost: %s", d)
+	}
+}

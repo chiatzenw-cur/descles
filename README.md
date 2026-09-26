@@ -127,6 +127,11 @@ The API calls below authenticate with your console session: `Authorization: Bear
      -H "Authorization: Bearer $SESSION" --data-binary @-
    ```
 
+   The edge's own `acme-edge/config/policy.yaml` still applies, as a floor: every decision is the
+   stricter of the two and every budget the lower cap. The control plane can tighten what your edge
+   enforces but can never loosen it, so a rule you must keep (for example, `billing.*` always needs
+   approval) belongs in that local file.
+
 4. **Invite members.** Each invitation sets a ceiling (the tools the member's agents may use, such as
    `github.*` or `*`, a resource, and a daily budget). Members can delegate only within it.
 

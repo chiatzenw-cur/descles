@@ -239,7 +239,19 @@ func Generate(o Options) (*Result, error) {
 	if err := write("config/secrets/admin-token", strings.TrimPrefix(adminToken, "vk_")+"\n", 0o600); err != nil {
 		return nil, err
 	}
-	if err := write("config/policy.yaml", policyYAML, 0o644); err != nil {
+	pol := policyYAML
+	if o.Mode == "hosted" {
+		// Managed: this file is a floor under the control plane's policy, so
+		// a budget here would silently cap every agent. Leave it to the
+		// control plane unless the operator uncomments it.
+		pol = strings.Replace(pol, "# Edge policy: enforced here, for every model, MCP and client-native tool call.\n",
+			"# Edge policy, managed mode: the control plane's policy applies too, and this\n"+
+				"# file can only make it stricter (a deny or approval here always wins; budgets\n"+
+				"# take the lower cap). The control plane cannot loosen it.\n", 1)
+		pol = strings.Replace(pol, "  budget:\n    daily_usd: 20\n",
+			"  # budget:\n  #   daily_usd: 20      # a cap here applies to every agent, whatever the control plane sets\n", 1)
+	}
+	if err := write("config/policy.yaml", pol, 0o644); err != nil {
 		return nil, err
 	}
 	if err := write("config/edge-mcp.yaml", mcpYAML(o.Connectors), 0o644); err != nil {
