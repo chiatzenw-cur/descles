@@ -1,0 +1,477 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Descles edge in your own AWS account: one EC2 instance running the signed edge
+  release, reachable over HTTPS on your domain (load balancer and certificate) or,
+  with no domain, on a CloudFront address that reaches the instance privately.
+  Your provider key and edge token go to Secrets Manager in this account; nothing
+  is sent to Descles except, in managed mode, the metadata in docs/DATA-FLOWS.md.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: "Edge"}
+        Parameters: [Mode, Provider, ProviderKey, OpenAIBase, ReleaseTag, InstanceType]
+      - Label: {default: "Managed mode (Descles control plane)"}
+        Parameters: [OrgId, BundleKey, EdgeToken, ControlPlaneURL]
+      - Label: {default: "Your domain (optional; leave DomainName empty for a CloudFront address)"}
+        Parameters: [DomainName, HostedZoneId, VpcId, SubnetIds, AllowedCidr]
+
+Parameters:
+  Mode:
+    Type: String
+    AllowedValues: [managed, standalone]
+    Default: managed
+    Description: managed connects to the Descles control plane; standalone reports nothing and writes one agent key into the generated secret.
+  Provider:
+    Type: String
+    AllowedValues: [anthropic, openai]
+    Default: anthropic
+  ProviderKey:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Your model provider API key. Stored in Secrets Manager in this account; read only by the edge instance.
+  OpenAIBase:
+    Type: String
+    Default: https://api.openai.com/v1
+    Description: OpenAI-compatible upstream (used when Provider is openai).
+  ReleaseTag:
+    Type: String
+    Default: v0.1.1
+    AllowedPattern: "v[0-9]+\\.[0-9]+\\.[0-9]+"
+    Description: Descles edge release. The CLI is checked against the release's SHA256SUMS and the image is pinned by the digest published with it.
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    AllowedValues: [t4g.small, t4g.medium, t4g.large]
+  OrgId:
+    Type: String
+    Default: ""
+    Description: Managed mode. Your organization id from the Descles console.
+  BundleKey:
+    Type: String
+    Default: ""
+    Description: Managed mode. The control plane's bundle signing key (hex), from GET /edge/bundle-key; compare it with the console before pasting.
+  EdgeToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Managed mode. The edge token (scopes edge.sync, edge.report). Stored in Secrets Manager in this account.
+  ControlPlaneURL:
+    Type: String
+    Default: https://api.gw.descles.com
+  DomainName:
+    Type: String
+    Default: ""
+    Description: Optional. The edge's address, e.g. descles.acme.com, in a Route 53 zone of this account. Empty gives you a https://xxxx.cloudfront.net address instead.
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: With DomainName. The Route 53 hosted zone that contains it.
+  VpcId:
+    Type: String
+    Default: ""
+    Description: With DomainName. The VPC for the load balancer and the instance.
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: With DomainName. Two public subnets of that VPC in different Availability Zones.
+  AllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+    Description: With DomainName. Who may reach the load balancer. Every call still needs an agent key or the admin token.
+  CloudFrontPrefixListId:
+    Type: String
+    Default: ""
+    Description: Without a domain, only if your Region is missing from the template's table. The id of the managed prefix list com.amazonaws.global.cloudfront.origin-facing in this Region.
+  LatestAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+
+Mappings:
+  # com.amazonaws.global.cloudfront.origin-facing, per Region (checked 2026-09-27).
+  # Other Regions: pass CloudFrontPrefixListId.
+  CloudFrontOriginFacing:
+    us-east-1: {PrefixListId: pl-3b927c52}
+    us-east-2: {PrefixListId: pl-b6a144df}
+    us-west-1: {PrefixListId: pl-4ea04527}
+    us-west-2: {PrefixListId: pl-82a045eb}
+    ap-south-1: {PrefixListId: pl-9aa247f3}
+    ap-northeast-3: {PrefixListId: pl-31a14458}
+    ap-southeast-1: {PrefixListId: pl-31a34658}
+    ap-southeast-2: {PrefixListId: pl-b8a742d1}
+    ap-northeast-1: {PrefixListId: pl-58a04531}
+    ap-northeast-2: {PrefixListId: pl-22a6434b}
+    ca-central-1: {PrefixListId: pl-38a64351}
+    eu-central-1: {PrefixListId: pl-a3a144ca}
+    eu-west-1: {PrefixListId: pl-4fa04526}
+    eu-west-2: {PrefixListId: pl-93a247fa}
+    eu-west-3: {PrefixListId: pl-75b1541c}
+    eu-north-1: {PrefixListId: pl-fab65393}
+    sa-east-1: {PrefixListId: pl-5da64334}
+
+Conditions:
+  Managed: !Equals [!Ref Mode, managed]
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+  NoDomain: !Equals [!Ref DomainName, ""]
+  PrefixListGiven: !Not [!Equals [!Ref CloudFrontPrefixListId, ""]]
+
+Rules:
+  ManagedNeedsControlPlane:
+    RuleCondition: !Equals [!Ref Mode, managed]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref OrgId, ""]]
+        AssertDescription: Managed mode needs OrgId.
+      - Assert: !Not [!Equals [!Ref BundleKey, ""]]
+        AssertDescription: Managed mode needs BundleKey.
+      - Assert: !Not [!Equals [!Ref EdgeToken, ""]]
+        AssertDescription: Managed mode needs EdgeToken.
+  DomainNeedsNetwork:
+    RuleCondition: !Not [!Equals [!Ref DomainName, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref HostedZoneId, ""]]
+        AssertDescription: DomainName needs HostedZoneId.
+      - Assert: !Not [!Equals [!Ref VpcId, ""]]
+        AssertDescription: DomainName needs VpcId.
+      - Assert: !Not [!Contains [!Ref SubnetIds, ""]]
+        AssertDescription: DomainName needs two SubnetIds.
+
+Resources:
+  # ---- Secrets (this account) ----
+  ProviderKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub "Descles edge ${AWS::StackName}: model provider key"
+      SecretString: !Ref ProviderKey
+
+  EdgeTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: Managed
+    Properties:
+      Description: !Sub "Descles edge ${AWS::StackName}: edge token for the control plane"
+      SecretString: !Ref EdgeToken
+
+  GeneratedSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub "Descles edge ${AWS::StackName}: admin token (and, standalone, the first agent key), written by the instance at first boot"
+      SecretString: "{}"
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore # Session Manager instead of SSH
+      Policies:
+        - PolicyName: descles-edge-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref ProviderKeySecret
+                  - !If [Managed, !Ref EdgeTokenSecret, !Ref ProviderKeySecret]
+              - Effect: Allow
+                Action: secretsmanager:PutSecretValue
+                Resource: !Ref GeneratedSecret
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # ---- Network without a domain: a small VPC of its own ----
+  EdgeVpc:
+    Type: AWS::EC2::VPC
+    Condition: NoDomain
+    Properties:
+      CidrBlock: 10.77.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: !Sub "descles-edge-${AWS::StackName}"}]
+
+  EdgeInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: NoDomain
+
+  EdgeGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: NoDomain
+    Properties:
+      VpcId: !Ref EdgeVpc
+      InternetGatewayId: !Ref EdgeInternetGateway
+
+  EdgeSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: NoDomain
+    Properties:
+      VpcId: !Ref EdgeVpc
+      CidrBlock: 10.77.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true # outbound only: releases, the image, your provider
+
+  EdgeRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: NoDomain
+    Properties:
+      VpcId: !Ref EdgeVpc
+
+  EdgeDefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: NoDomain
+    DependsOn: EdgeGatewayAttachment
+    Properties:
+      RouteTableId: !Ref EdgeRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref EdgeInternetGateway
+
+  EdgeSubnetRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: NoDomain
+    Properties:
+      SubnetId: !Ref EdgeSubnet
+      RouteTableId: !Ref EdgeRouteTable
+
+  # ---- Security groups ----
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: HasDomain
+    Properties:
+      GroupDescription: Descles edge load balancer (HTTPS in)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref AllowedCidr}
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Descles edge instance (only from its load balancer or CloudFront; no SSH)
+      VpcId: !If [HasDomain, !Ref VpcId, !Ref EdgeVpc]
+      SecurityGroupIngress:
+        - !If
+          - HasDomain
+          - {IpProtocol: tcp, FromPort: 8081, ToPort: 8081, SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup}
+          - IpProtocol: tcp
+            FromPort: 8081
+            ToPort: 8081
+            Description: CloudFront VPC origin - traffic arrives from CloudFront origin-facing addresses
+            SourcePrefixListId: !If
+              - PrefixListGiven
+              - !Ref CloudFrontPrefixListId
+              - !FindInMap [CloudFrontOriginFacing, !Ref "AWS::Region", PrefixListId]
+
+  # ---- The edge ----
+  Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: InstanceRole
+    CreationPolicy:
+      ResourceSignal: {Timeout: PT20M}
+    Properties:
+      ImageId: !Ref LatestAmi
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !If [HasDomain, !Select [0, !Ref SubnetIds], !Ref EdgeSubnet]
+      SecurityGroupIds: [!Ref InstanceSecurityGroup]
+      MetadataOptions: {HttpTokens: required, HttpEndpoint: enabled}
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 20, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+      Tags:
+        - {Key: Name, Value: !Sub "descles-edge-${AWS::StackName}"}
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            # Descles edge first boot. Log: /var/log/descles-edge-setup.log
+            set -euo pipefail
+            exec > /var/log/descles-edge-setup.log 2>&1
+            dnf install -y docker jq aws-cfn-bootstrap
+            signal() { /opt/aws/bin/cfn-signal -e "$1" --stack ${AWS::StackName} --resource Instance --region ${AWS::Region} || true; }
+            trap 'signal 1' ERR
+            systemctl enable --now docker
+
+            # Docker Compose plugin, checked against its published checksum.
+            mkdir -p /usr/local/lib/docker/cli-plugins /tmp/descles && cd /tmp/descles
+            curl -fsSLO https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-aarch64
+            curl -fsSLO https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-aarch64.sha256
+            sha256sum -c docker-compose-linux-aarch64.sha256
+            install -m 0755 docker-compose-linux-aarch64 /usr/local/lib/docker/cli-plugins/docker-compose
+
+            # The descles CLI from the release, checked against SHA256SUMS; the
+            # image pinned by the digest published with the same release.
+            rel=https://github.com/chiatzenw-cur/descles/releases/download/${ReleaseTag}
+            curl -fsSLO "$rel/descles-${ReleaseTag}-linux-arm64"
+            curl -fsSLO "$rel/SHA256SUMS"
+            grep " descles-${ReleaseTag}-linux-arm64$" SHA256SUMS | sha256sum -c -
+            install -m 0755 "descles-${ReleaseTag}-linux-arm64" /usr/local/bin/descles
+            image=$(curl -fsSL "$rel/descles-edge-image.digest")
+            case "$image" in ghcr.io/chiatzenw-cur/descles-edge@sha256:*) ;; *) echo "unexpected image: $image"; exit 1;; esac
+
+            dir=/opt/descles-edge
+            if [ "${Mode}" = managed ]; then
+              descles edge init --yes --dir "$dir" --mode hosted --control-plane "${ControlPlaneURL}" \
+                --org "${OrgId}" --bundle-key "${BundleKey}" --providers "${Provider}" \
+                --openai-base "${OpenAIBase}" --image "$image" --edge-id "${AWS::StackName}" > /tmp/descles/init.txt
+              aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id "${EdgeTokenArn}" \
+                --query SecretString --output text > "$dir/config/secrets/report-token"
+            else
+              descles edge init --yes --dir "$dir" --providers "${Provider}" --openai-base "${OpenAIBase}" \
+                --image "$image" --edge-id "${AWS::StackName}" > /tmp/descles/init.txt
+            fi
+            aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id "${ProviderKeySecret}" \
+              --query SecretString --output text > "$dir/config/secrets/${Provider}-key"
+            chmod 600 "$dir"/config/secrets/*
+
+            # Reachable by the load balancer or CloudFront (the security group
+            # admits only those), and approval links on the public address.
+            if [ -n "${PublicURL}" ]; then echo "DESCLES_EDGE_PUBLIC_URL=${PublicURL}" >> "$dir/edge.env"; fi
+            sed -i 's/"127.0.0.1:8081:8080"/"8081:8080"/' "$dir/compose.yml"
+            grep -q '"8081:8080"' "$dir/compose.yml"
+
+            # The admin token (and, standalone, the first agent key) go to this
+            # stack's secret; they are not left in logs or on the command line.
+            agent_key=$(grep -o 'vk_[0-9a-f]*' /tmp/descles/init.txt | head -1 || true)
+            jq -n --rawfile admin "$dir/config/secrets/admin-token" --arg agent "$agent_key" \
+              '{admin_token: ($admin | rtrimstr("\n"))} + (if $agent == "" then {} else {agent_key: $agent} end)' > /tmp/descles/generated.json
+            aws secretsmanager put-secret-value --region ${AWS::Region} --secret-id "${GeneratedSecret}" \
+              --secret-string file:///tmp/descles/generated.json
+            rm -f /tmp/descles/generated.json /tmp/descles/init.txt
+
+            descles edge up --dir "$dir"
+            signal 0
+          - EdgeTokenArn: !If [Managed, !Ref EdgeTokenSecret, ""]
+            PublicURL: !If [HasDomain, !Sub "https://${DomainName}", ""]
+
+  # ---- HTTPS on your domain ----
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: HasDomain
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - {DomainName: !Ref DomainName, HostedZoneId: !Ref HostedZoneId}
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: HasDomain
+    Properties:
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8081
+      TargetType: instance
+      Targets: [{Id: !Ref Instance, Port: 8081}]
+      HealthCheckPath: /healthz
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      Matcher: {HttpCode: "200"}
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: HasDomain
+    Properties:
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+      LoadBalancerAttributes:
+        - {Key: idle_timeout.timeout_seconds, Value: "300"} # streamed model responses
+        - {Key: routing.http.drop_invalid_header_fields.enabled, Value: "true"}
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasDomain
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates: [{CertificateArn: !Ref Certificate}]
+      DefaultActions: [{Type: forward, TargetGroupArn: !Ref TargetGroup}]
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDomain
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt LoadBalancer.DNSName
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
+
+  # ---- HTTPS without a domain: CloudFront reaching the instance privately ----
+  EdgeVpcOrigin:
+    Type: AWS::CloudFront::VpcOrigin
+    Condition: NoDomain
+    Properties:
+      VpcOriginEndpointConfig:
+        Name: !Sub "descles-edge-${AWS::StackName}"
+        Arn: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}"
+        HTTPPort: 8081
+        HTTPSPort: 443
+        OriginProtocolPolicy: http-only
+
+  EdgeCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Condition: NoDomain
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "descles-edge-${AWS::StackName}"
+        Comment: No caching; the agent's key is part of every request.
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 1
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: false
+          EnableAcceptEncodingBrotli: false
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers: [Authorization, x-api-key]
+          CookiesConfig: {CookieBehavior: none}
+          QueryStringsConfig: {QueryStringBehavior: all}
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: NoDomain
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "Descles edge ${AWS::StackName}"
+        HttpVersion: http2
+        Origins:
+          - Id: edge
+            DomainName: !GetAtt Instance.PrivateDnsName
+            VpcOriginConfig:
+              VpcOriginId: !GetAtt EdgeVpcOrigin.Id
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+        DefaultCacheBehavior:
+          TargetOriginId: edge
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: !Ref EdgeCachePolicy
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+          Compress: false
+
+Outputs:
+  EdgeURL:
+    Description: Point agents here (ANTHROPIC_BASE_URL=<this>/anthropic, OPENAI_BASE_URL=<this>/v1).
+    Value: !If [HasDomain, !Sub "https://${DomainName}", !Sub "https://${Distribution.DomainName}"]
+  ApproverURL:
+    Description: Approvals, decided with the admin token.
+    Value: !If [HasDomain, !Sub "https://${DomainName}/admin/", !Sub "https://${Distribution.DomainName}/admin/"]
+  GeneratedSecretArn:
+    Description: Holds the admin token and, standalone, the first agent key. Read it with aws secretsmanager get-secret-value.
+    Value: !Ref GeneratedSecret
+  InstanceId:
+    Description: Connect with AWS Systems Manager Session Manager (no SSH). Setup log at /var/log/descles-edge-setup.log.
+    Value: !Ref Instance

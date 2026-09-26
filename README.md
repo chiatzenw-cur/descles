@@ -52,6 +52,9 @@ The edge runs as a container (`ghcr.io/chiatzenw-cur/descles-edge`, pin it by di
 binary. Signed binaries are on [Releases](https://github.com/chiatzenw-cur/descles/releases). To check that a
 release is what this source builds, see [docs/VERIFY-RELEASE.md](docs/VERIFY-RELEASE.md).
 
+No server of your own? [deploy/aws](deploy/aws/README.md) runs the edge in your AWS account from one
+CloudFormation stack, on your domain or on a CloudFront address with no domain needed.
+
 ## 1. Standalone edge (no Descles account)
 
 Standalone mode sends no reports to Descles. Requests still reach the model providers and tool servers
