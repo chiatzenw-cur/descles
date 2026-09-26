@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"github.com/chiatzenw-cur/descles/pkg/policy"
 	"github.com/chiatzenw-cur/descles/pkg/tracing"
 	"io"
 	"net/http"
@@ -30,6 +31,12 @@ type ApprovalAdmin struct {
 	}
 	// Info serves GET /admin/info (edge id, policy digest, ...). Optional.
 	Info func() map[string]any
+	// Recent serves the console's Activity and Policy replay. Optional.
+	Recent RecentSpans
+	// Policy is what the edge enforces, for the console's Policy panel.
+	Policy *policy.Holder
+	// Panels are extra console panels from extensions.
+	Panels []AdminPanel
 }
 
 // Register mounts the admin routes. Without a token they are not served.
@@ -45,6 +52,20 @@ func (a *ApprovalAdmin) Register(mux *http.ServeMux) {
 	}
 	if a.Info != nil {
 		mux.Handle("GET /admin/info", a.auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeJSONBody(w, a.Info()) })))
+	}
+	mux.Handle("GET /admin/panels", a.auth(http.HandlerFunc(a.panels)))
+	if a.Recent != nil {
+		mux.Handle("GET /admin/activity", a.auth(http.HandlerFunc(a.activity)))
+	}
+	if a.Policy != nil {
+		mux.Handle("GET /admin/policy", a.auth(http.HandlerFunc(a.policyView)))
+		mux.Handle("POST /admin/policy/check", a.auth(http.HandlerFunc(a.policyCheck)))
+		if a.Recent != nil {
+			mux.Handle("GET /admin/policy/replay", a.auth(http.HandlerFunc(a.policyReplay)))
+		}
+	}
+	for _, p := range a.Panels {
+		p.RegisterAdmin(mux, a.auth)
 	}
 }
 
@@ -116,56 +137,6 @@ func (a *ApprovalAdmin) page(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, adminPage)
 }
 
-const adminPage = `<!doctype html><meta charset="utf-8"><title>Descles edge approvals</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-:root{--bg:#fafaf7;--fg:#1d1d1b;--mut:#6b6b66;--line:#e2e1da;--ok:#2f6b3a;--no:#9b2c2c;--card:#fff}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ecebe6;--mut:#9a9992;--line:#2c2c2a;--ok:#7fc28d;--no:#e08b8b;--card:#1f1f1d}}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
-main{max-width:860px;margin:0 auto;padding:24px 16px}
-h1{font-size:20px;margin:0 0 4px}p.mut{color:var(--mut);margin:0 0 20px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:0 0 12px}
-.tool{font-weight:600;font-family:ui-monospace,monospace}
-.meta{color:var(--mut);font-size:13px}
-pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:260px;font-size:13px}
-button{font:inherit;border-radius:8px;border:1px solid var(--line);padding:6px 14px;cursor:pointer;background:var(--card);color:var(--fg)}
-button.ok{border-color:var(--ok);color:var(--ok)}button.no{border-color:var(--no);color:var(--no)}
-input{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
-</style>
-<main>
-<h1>Pending approvals</h1>
-<p class="mut">Served by your Descles edge. Call details come from this edge only.</p>
-<div class="row" style="margin-bottom:16px"><input id="by" placeholder="Your name" autocomplete="name"><button id="reload">Refresh</button></div>
-<div id="list"></div>
-</main>
-<script>
-const tokenKey="descles-edge-admin";
-function token(){let t="";try{t=sessionStorage.getItem(tokenKey)||""}catch(e){}
- if(!t){t=prompt("Edge admin token")||"";try{sessionStorage.setItem(tokenKey,t)}catch(e){}}return t}
-async function api(path,opts){opts=opts||{};opts.headers=Object.assign({"Authorization":"Bearer "+token()},opts.headers||{});
- const r=await fetch(path,opts);if(r.status===401){try{sessionStorage.removeItem(tokenKey)}catch(e){};throw new Error("Wrong admin token")}
- if(!r.ok)throw new Error(await r.text());return r.json()}
-function el(tag,attrs,text){const e=document.createElement(tag);Object.assign(e,attrs||{});if(text!==undefined)e.textContent=text;return e}
-async function load(){const list=document.getElementById("list");list.textContent="Loading…";
- try{const d=await api("/admin/approvals?state=pending");list.textContent="";
-  if(!d.approvals.length){list.append(el("p",{className:"mut"},"Nothing is waiting for a decision."));return}
-  for(const a of d.approvals){const c=el("div",{className:"card"});
-   c.append(el("div",{className:"tool"},a.tool));
-   c.append(el("div",{className:"meta"},"agent "+a.agent_id+(a.user_id?" for "+a.user_id:"")+" · requested "+new Date(a.created_at).toLocaleString()+" · decide by "+new Date(a.expires_at).toLocaleTimeString()));
-   let args=a.args;try{args=JSON.stringify(a.args,null,2)}catch(e){}
-   c.append(el("pre",{},args||"(no arguments)"));
-   const reason=el("input",{placeholder:"Reason (optional)"});
-   const ok=el("button",{className:"ok"},"Approve");const no=el("button",{className:"no"},"Deny");
-   for(const [b,dec] of [[ok,"approve"],[no,"deny"]])b.onclick=async()=>{const by=document.getElementById("by").value.trim();
-    if(!by){alert("Enter your name first");return}
-    try{await api("/admin/approvals/"+encodeURIComponent(a.id)+"/"+dec,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({by:by,reason:reason.value})});load()}catch(e){alert(e.message)}};
-   const row=el("div",{className:"row"});row.append(reason,ok,no);c.append(row);list.append(c)}
- }catch(e){list.textContent=e.message}}
-try{document.getElementById("by").value=localStorage.getItem("descles-approver")||""}catch(e){}
-document.getElementById("by").onchange=e=>{try{localStorage.setItem("descles-approver",e.target.value)}catch(_){}};
-document.getElementById("reload").onclick=load;load();
-</script>`
 
 // TraceRecord is one locally recorded span as the admin API returns it.
 type TraceRecord struct {

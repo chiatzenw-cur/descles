@@ -116,3 +116,13 @@ func lowerTokens(a int64, aok bool) func(int64, bool) (int64, bool) {
 		return a, true
 	}
 }
+
+// DecisionParts reports the decision of p's own rules and, when p has a
+// floor, of the floor, so a console can say which side decided a call.
+func (p *Policy) DecisionParts(agent, group, tool string, args map[string]any) (own, floor Decision, hasFloor bool) {
+	own = p.ownToolDecisionInArgs(agent, group, tool, args)
+	if p.floor == nil {
+		return own, "", false
+	}
+	return own, p.floor.ToolDecisionInArgs(agent, group, tool, args), true
+}

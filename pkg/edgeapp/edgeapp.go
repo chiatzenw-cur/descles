@@ -262,6 +262,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 			return err
 		}
 		admin.Traces = metered
+		admin.Recent = metered
+		admin.Policy = holder
+		for _, e := range mcp.Extensions {
+			if p, ok := e.(edge.AdminPanel); ok {
+				admin.Panels = append(admin.Panels, p)
+			}
+		}
 		admin.Info = func() map[string]any {
 			info := map[string]any{"edge_id": edgeID, "mode": "standalone", "policy_sha256": policyDigest(holder),
 				"approval_sweep": admin.Store.SweepStatus()}
