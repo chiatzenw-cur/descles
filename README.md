@@ -155,7 +155,20 @@ The API calls below authenticate with your console session: `Authorization: Bear
 
    `GET /control/team/access` shows what your admin granted you.
 
-3. **Connect your agent to your company's edge** (not to Descles):
+3. **Connect your agent to your company's edge** (not to Descles). Nobody installs an edge of their own;
+   the organization runs one, and you change an endpoint.
+
+   **Endpoint only, nothing to install.** Set the base URL and your agent key, and point MCP clients at
+   the edge. Model calls and company tools are then governed:
+
+   ```bash
+   export ANTHROPIC_BASE_URL=https://descles.internal/anthropic   # or OPENAI_BASE_URL=https://descles.internal/v1
+   export ANTHROPIC_AUTH_TOKEN=<key>
+   # MCP: https://descles.internal/mcp/<connector>, header Authorization: Bearer <key>
+   ```
+
+   **With the `descles` CLI** (a single binary, not a service), you also get shell and file actions checked
+   before they run in Claude Code and Hermes, the settings written for you, and `doctor`:
 
    ```bash
    descles connect claude-code --edge https://descles.internal --key <key>   # settings, hooks, MCP
