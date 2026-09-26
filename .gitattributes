@@ -3,4 +3,5 @@
 # and rebuild-and-compare verification would fail.
 * text=auto eol=lf
 *.png binary
+*.gif binary
 *.exe binary
