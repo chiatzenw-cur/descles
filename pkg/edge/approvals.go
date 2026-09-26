@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -77,7 +78,12 @@ type ApprovalStore struct {
 	// SweepInterval bounds how long expired arguments stay in the file while
 	// the edge runs (default 1m). See RunSweeper.
 	SweepInterval time.Duration
-	now           func() time.Time
+	// OnSweepError is told about every failed sweep (the edge logs it).
+	OnSweepError func(error)
+	now          func() time.Time
+
+	sweepMu sync.Mutex
+	sweep   SweepStatus
 }
 
 func OpenApprovals(path string) (*ApprovalStore, error) {
@@ -103,6 +109,11 @@ func OpenApprovals(path string) (*ApprovalStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// Before anything compares times in SQL.
+	if err := normalizeTimes(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	// One pending request per exact call. Files from before this index may
 	// hold duplicates: keep the oldest, close the rest.
 	if _, err := db.Exec(`UPDATE edge_approvals SET state=?, args=NULL WHERE state=? AND EXISTS (
@@ -120,7 +131,7 @@ func OpenApprovals(path string) (*ApprovalStore, error) {
 	}
 	s := &ApprovalStore{db: db, PendingTTL: 30 * time.Minute, UseWindow: 15 * time.Minute, SweepInterval: time.Minute, now: func() time.Time { return time.Now().UTC() }}
 	// Close whatever expired while the edge was down, before serving anything.
-	if err := s.expire(context.Background()); err != nil {
+	if err := s.Sweep(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -128,20 +139,18 @@ func OpenApprovals(path string) (*ApprovalStore, error) {
 }
 
 // RunSweeper closes expired approvals, erasing their arguments, every
-// SweepInterval until ctx ends, whether or not any request arrives.
+// SweepInterval until ctx ends, whether or not any request arrives. Failures
+// are recorded in SweepStatus and passed to OnSweepError; the next tick
+// retries.
 func (s *ApprovalStore) RunSweeper(ctx context.Context) {
-	every := s.SweepInterval
-	if every <= 0 {
-		every = time.Minute
-	}
-	t := time.NewTicker(every)
+	t := time.NewTicker(s.sweepEvery())
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = s.expire(ctx)
+			_ = s.Sweep(ctx)
 		}
 	}
 }
@@ -165,7 +174,104 @@ func approvalID() string {
 	return "apr_" + hex.EncodeToString(b)
 }
 
-func (s *ApprovalStore) ts(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// approvalTime is fixed width, so SQLite's text comparison orders times
+// correctly. RFC3339Nano trims trailing zeros, and "…:05Z" sorts after
+// "…:05.5Z" although it is earlier.
+const approvalTime = "2006-01-02T15:04:05.000000000Z"
+
+func (s *ApprovalStore) ts(t time.Time) string { return t.UTC().Format(approvalTime) }
+
+// normalizeTimes rewrites times stored by older versions in the fixed-width
+// format, so comparisons in SQL are correct for existing rows too.
+func normalizeTimes(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, created_at, expires_at, COALESCE(decided_at, '') FROM edge_approvals`)
+	if err != nil {
+		return err
+	}
+	type fix struct{ id, created, expires, decided string }
+	var fixes []fix
+	for rows.Next() {
+		var f fix
+		if err := rows.Scan(&f.id, &f.created, &f.expires, &f.decided); err != nil {
+			rows.Close()
+			return err
+		}
+		changed := false
+		for _, p := range []*string{&f.created, &f.expires, &f.decided} {
+			if *p == "" {
+				continue
+			}
+			t, err := time.Parse(time.RFC3339Nano, *p)
+			if err != nil {
+				rows.Close()
+				return fmt.Errorf("approval %s: stored time %q: %w", f.id, *p, err)
+			}
+			if n := t.UTC().Format(approvalTime); n != *p {
+				*p, changed = n, true
+			}
+		}
+		if changed {
+			fixes = append(fixes, f)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, f := range fixes {
+		var decided any
+		if f.decided != "" {
+			decided = f.decided
+		}
+		if _, err := db.Exec(`UPDATE edge_approvals SET created_at=?, expires_at=?, decided_at=? WHERE id=?`, f.created, f.expires, decided, f.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SweepStatus reports the expiry sweep, so a failing erasure is visible
+// (in /admin/info and `descles doctor`) instead of silent.
+type SweepStatus struct {
+	Interval  string    `json:"interval"`
+	LastOK    time.Time `json:"last_ok,omitempty"`
+	LastError string    `json:"last_error,omitempty"`
+	LastErrAt time.Time `json:"last_error_at,omitempty"`
+	Failures  int       `json:"consecutive_failures"`
+}
+
+// Sweep closes expired approvals and erases their arguments now, recording
+// the outcome in SweepStatus and reporting failures to OnSweepError.
+func (s *ApprovalStore) Sweep(ctx context.Context) error {
+	err := s.expire(ctx)
+	s.sweepMu.Lock()
+	if err == nil {
+		s.sweep.LastOK, s.sweep.Failures = time.Now().UTC(), 0
+	} else {
+		s.sweep.LastError, s.sweep.LastErrAt = err.Error(), time.Now().UTC()
+		s.sweep.Failures++
+	}
+	s.sweepMu.Unlock()
+	if err != nil && s.OnSweepError != nil {
+		s.OnSweepError(err)
+	}
+	return err
+}
+
+func (s *ApprovalStore) SweepStatus() SweepStatus {
+	s.sweepMu.Lock()
+	defer s.sweepMu.Unlock()
+	st := s.sweep
+	st.Interval = s.sweepEvery().String()
+	return st
+}
+
+func (s *ApprovalStore) sweepEvery() time.Duration {
+	if s.SweepInterval <= 0 {
+		return time.Minute
+	}
+	return s.SweepInterval
+}
 
 // expire closes overdue approvals and erases their arguments.
 func (s *ApprovalStore) expire(ctx context.Context) error {

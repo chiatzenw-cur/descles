@@ -83,6 +83,7 @@ func Doctor(ctx context.Context, o DoctorOptions) []Check {
 		add(Check{"trace linkage", CheckSkip, "pass --admin-token-file to verify that records carry your trace and playbook ids", ""})
 	} else {
 		add(traceRoundTrip(ctx, o))
+		add(approvalSweepCheck(ctx, o))
 	}
 
 	// 5. Claude Code.
@@ -96,6 +97,34 @@ func Doctor(ctx context.Context, o DoctorOptions) []Check {
 		}
 	}
 	return out
+}
+
+// approvalSweepCheck reads /admin/info: expired approval arguments must be
+// erasable, so a failing sweep is reported rather than silent.
+func approvalSweepCheck(ctx context.Context, o DoctorOptions) Check {
+	const name = "approval erasure"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, o.Edge.URL+"/admin/info", nil)
+	req.Header.Set("Authorization", "Bearer "+o.AdminToken)
+	resp, err := o.Edge.client().Do(req)
+	if err != nil {
+		return Check{name, CheckFail, err.Error(), ""}
+	}
+	defer resp.Body.Close()
+	var info struct {
+		Sweep *struct {
+			Interval  string `json:"interval"`
+			LastError string `json:"last_error"`
+			Failures  int    `json:"consecutive_failures"`
+		} `json:"approval_sweep"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&info) != nil || info.Sweep == nil {
+		return Check{name, CheckSkip, "this edge does not report its expiry sweep", "update the edge"}
+	}
+	if info.Sweep.Failures > 0 {
+		return Check{name, CheckFail, fmt.Sprintf("the expiry sweep failed %d times in a row: %s", info.Sweep.Failures, info.Sweep.LastError),
+			"expired approval arguments are not being erased: check the approvals database volume (disk full, permissions) and the edge log"}
+	}
+	return Check{name, CheckOK, "expired approval arguments are swept every " + info.Sweep.Interval, ""}
 }
 
 func traceRoundTrip(ctx context.Context, o DoctorOptions) Check {

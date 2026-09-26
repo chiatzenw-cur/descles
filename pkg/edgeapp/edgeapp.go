@@ -249,7 +249,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		}
 		admin.Traces = metered
 		admin.Info = func() map[string]any {
-			info := map[string]any{"edge_id": edgeID, "mode": "standalone", "policy_sha256": policyDigest(holder)}
+			info := map[string]any{"edge_id": edgeID, "mode": "standalone", "policy_sha256": policyDigest(holder),
+				"approval_sweep": admin.Store.SweepStatus()}
 			if bundle != nil {
 				info["mode"] = "managed"
 			}
@@ -510,6 +511,9 @@ func edgeApprovals(logger *slog.Logger, spansPath string) (*edge.ApprovalAdmin, 
 	store, err := edge.OpenApprovals(path)
 	if err != nil {
 		return nil, func() {}, err
+	}
+	store.OnSweepError = func(err error) {
+		logger.Error("approval expiry sweep failed; expired arguments are not being erased", "err", err, "status", store.SweepStatus())
 	}
 	sweepCtx, stopSweep := context.WithCancel(context.Background())
 	go store.RunSweeper(sweepCtx)

@@ -94,3 +94,26 @@ func keys(m map[string]string) []string {
 	}
 	return out
 }
+
+func TestDoctorReportsFailingApprovalSweep(t *testing.T) {
+	for _, tc := range []struct {
+		body, want string
+	}{
+		{`{"approval_sweep":{"interval":"1m0s","consecutive_failures":3,"last_error":"disk I/O error"}}`, CheckFail},
+		{`{"approval_sweep":{"interval":"1m0s","consecutive_failures":0}}`, CheckOK},
+		{`{"edge_id":"old-edge"}`, CheckSkip},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/admin/info" || r.Header.Get("Authorization") != "Bearer admin-tok" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write([]byte(tc.body))
+		}))
+		c := approvalSweepCheck(context.Background(), DoctorOptions{Edge: Edge{URL: srv.URL}, AdminToken: "admin-tok"})
+		srv.Close()
+		if c.Status != tc.want {
+			t.Errorf("%s: got %s (%s), want %s", tc.body, c.Status, c.Detail, tc.want)
+		}
+	}
+}
