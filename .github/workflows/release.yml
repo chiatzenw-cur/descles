@@ -57,8 +57,9 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
+    needs: binaries # the release exists before the image digest is attached to it
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write
       attestations: write
@@ -79,6 +80,8 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest
+          labels: |
+            org.opencontainers.image.licenses=Elastic-2.0
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -97,5 +100,11 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
-      - name: Record digest
-        run: echo "Edge image ${IMAGE}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the digest with the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "${IMAGE}@${DIGEST}" > descles-edge-image.digest
+          gh release upload "${GITHUB_REF_NAME}" descles-edge-image.digest --clobber
+          echo "Edge image ${IMAGE}@${DIGEST}" >> "$GITHUB_STEP_SUMMARY"

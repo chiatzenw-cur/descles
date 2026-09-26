@@ -13,7 +13,10 @@ that what you run is what that code builds to.
 
 ## Rebuild and compare (strongest)
 
-Release binaries are built with Go's reproducible settings. With the Go version in `go.mod`:
+Release binaries are built with Go's reproducible settings. Use the Go toolchain the release used
+(v0.1.0: go1.27.1), and a checkout with LF line endings: web assets are embedded byte for byte, so a
+CRLF checkout (Git's Windows default) builds a different binary. The repository's `.gitattributes`
+enforces LF; for a clone made before it existed, use `git -c core.autocrlf=false clone ...`.
 
 ```bash
 git clone https://github.com/chiatzenw-cur/descles && cd descles && git checkout vX.Y.Z
@@ -26,10 +29,15 @@ sha256sum descles-edge   # compare with SHA256SUMS in the release
 ```bash
 gh attestation verify descles-edge-vX.Y.Z-linux-amd64 --repo chiatzenw-cur/descles
 
+# the digest is attached to each release as descles-edge-image.digest
 cosign verify ghcr.io/chiatzenw-cur/descles-edge@sha256:<digest> \
   --certificate-identity-regexp '^https://github.com/chiatzenw-cur/descles/.github/workflows/release.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+Use **cosign v3** or later: releases are signed with cosign v3, whose signature format cosign v2
+cannot find ("no signatures found"). A signature from any other repository or workflow must fail
+verification.
 
 Deploy the image **by digest** (`image@sha256:...`), not by tag. `descles edge init` warns when the
 compose file uses a tag.

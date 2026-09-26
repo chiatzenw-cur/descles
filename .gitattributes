@@ -1,0 +1,6 @@
+# Check out text files with LF everywhere. The edge embeds web assets with
+# go:embed, so a CRLF checkout (Windows default) builds a different binary
+# and rebuild-and-compare verification would fail.
+* text=auto eol=lf
+*.png binary
+*.exe binary
