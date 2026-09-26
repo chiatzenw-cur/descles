@@ -97,3 +97,46 @@ func TestSweepFailureIsObservable(t *testing.T) {
 		t.Fatalf("status %+v, reported %v", st, reported)
 	}
 }
+
+func TestDecideCannotCrossExpiryAfterSweep(t *testing.T) {
+	for _, approve := range []bool{true, false} {
+		s, clock, _ := openTestApprovals(t)
+		ctx := context.Background()
+		a, args := refundCall("1")
+		req, _, err := s.Request(ctx, a, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		s.now = func() time.Time {
+			calls++
+			if calls == 1 {
+				return clock.t
+			}
+			return req.ExpiresAt
+		}
+		if _, err := s.Decide(ctx, req.ID, approve, "reviewer", ""); err != ErrApprovalNotPending {
+			t.Fatalf("late decision accepted: %v", err)
+		}
+	}
+}
+
+func TestConsumeSubsecondExpiry(t *testing.T) {
+	for _, offset := range []time.Duration{-time.Nanosecond, 0, 500 * time.Millisecond} {
+		s, clock, _ := openTestApprovals(t)
+		ctx := context.Background()
+		a, args := refundCall("1")
+		req, _, err := s.Request(ctx, a, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.Decide(ctx, req.ID, true, "reviewer", ""); err != nil {
+			t.Fatal(err)
+		}
+		clock.add(s.UseWindow + offset)
+		id, err := s.Consume(ctx, a.OrgID, a.AgentID, a.Tool, a.ArgsDigest)
+		if err != nil || (id != "") != (offset < 0) {
+			t.Fatalf("offset %v: id=%s err=%v", offset, id, err)
+		}
+	}
+}

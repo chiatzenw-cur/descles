@@ -33,7 +33,8 @@ import (
 // Erasure: arguments are set to NULL when an approval closes. Expired
 // requests are closed by a sweep at startup and every SweepInterval (default
 // 1 minute), so while the edge runs, arguments outlive their expiry by at
-// most about one interval; after downtime they are swept at the next start.
+// most about one interval when database writes succeed; failures are reported
+// and retried. After downtime they are swept at the next start.
 // Reads never return arguments past expiry. SQLite secure_delete overwrites
 // the erased bytes in the database file. Copies taken earlier (backups,
 // snapshots of the data volume) are outside this process and keep what they
@@ -105,6 +106,12 @@ func OpenApprovals(path string) (*ApprovalStore, error) {
 		return nil, err
 	}
 	// Erased arguments are overwritten in the file, not just unlinked.
+	// Wait out another reader (a backup, an operator's sqlite3) instead of
+	// failing a request or a sweep with SQLITE_BUSY.
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(`PRAGMA secure_delete=ON`); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -328,11 +335,11 @@ func (s *ApprovalStore) Decide(ctx context.Context, id string, approve bool, by,
 	var res sql.Result
 	var err error
 	if approve {
-		res, err = s.db.ExecContext(ctx, `UPDATE edge_approvals SET state=?, decided_by=?, decided_at=?, reason=?, expires_at=? WHERE id=? AND state=?`,
-			ApprovalApproved, by, s.ts(now), reason, s.ts(now.Add(s.UseWindow)), id, ApprovalPending)
+		res, err = s.db.ExecContext(ctx, `UPDATE edge_approvals SET state=?, decided_by=?, decided_at=?, reason=?, expires_at=? WHERE id=? AND state=? AND expires_at > ?`,
+			ApprovalApproved, by, s.ts(now), reason, s.ts(now.Add(s.UseWindow)), id, ApprovalPending, s.ts(now))
 	} else {
-		res, err = s.db.ExecContext(ctx, `UPDATE edge_approvals SET state=?, decided_by=?, decided_at=?, reason=?, args=NULL WHERE id=? AND state=?`,
-			ApprovalDenied, by, s.ts(now), reason, id, ApprovalPending)
+		res, err = s.db.ExecContext(ctx, `UPDATE edge_approvals SET state=?, decided_by=?, decided_at=?, reason=?, args=NULL WHERE id=? AND state=? AND expires_at > ?`,
+			ApprovalDenied, by, s.ts(now), reason, id, ApprovalPending, s.ts(now))
 	}
 	if err != nil {
 		return Approval{}, err

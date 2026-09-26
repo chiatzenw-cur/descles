@@ -139,7 +139,9 @@ func TestExpiredArgumentsErasedWithoutFurtherRequests(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go s.RunSweeper(ctx)
-	raw, err := sql.Open("sqlite", path)
+	// A second reader, as a backup tool would be: it waits out the sweeper's
+	// writes instead of failing with SQLITE_BUSY.
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}

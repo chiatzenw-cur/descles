@@ -54,7 +54,8 @@ release is what this source builds, see [docs/VERIFY-RELEASE.md](docs/VERIFY-REL
 
 ## 1. Standalone edge (no Descles account)
 
-Nothing leaves your network. Agent keys are stored as hashes in a file, and policy is a YAML file.
+Standalone mode sends no reports to Descles. Requests still reach the model providers and tool servers
+you configure. Agent keys are stored as hashes in a file, and policy is a YAML file.
 
 ```bash
 descles edge init --yes --dir my-edge --providers anthropic   # prints an agent key once; writes config,
