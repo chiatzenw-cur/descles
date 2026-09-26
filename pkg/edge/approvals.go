@@ -22,6 +22,21 @@ import (
 // before it expires. Anything else (changed arguments, a second execution, a
 // late retry) needs a new approval. Grants and policy are re-checked when the
 // approved call runs, so a revocation after approval still stops it.
+//
+// Retries and repeats: while a call is pending, asking again for the same
+// call (same org, edge, agent, tool and digest) returns the same request; a
+// unique index makes that hold under concurrency. Once that request is used,
+// denied or expired, the same call again is a new action and needs a new
+// approval.
+//
+// Erasure: arguments are set to NULL when an approval closes. Expired
+// requests are closed by a sweep at startup and every SweepInterval (default
+// 1 minute), so while the edge runs, arguments outlive their expiry by at
+// most about one interval; after downtime they are swept at the next start.
+// Reads never return arguments past expiry. SQLite secure_delete overwrites
+// the erased bytes in the database file. Copies taken earlier (backups,
+// snapshots of the data volume) are outside this process and keep what they
+// captured.
 
 // Approval states.
 const (
@@ -59,7 +74,10 @@ type ApprovalStore struct {
 	db         *sql.DB
 	PendingTTL time.Duration // how long a request waits for a decision (default 30m)
 	UseWindow  time.Duration // how long an approval may be used (default 15m)
-	now        func() time.Time
+	// SweepInterval bounds how long expired arguments stay in the file while
+	// the edge runs (default 1m). See RunSweeper.
+	SweepInterval time.Duration
+	now           func() time.Time
 }
 
 func OpenApprovals(path string) (*ApprovalStore, error) {
@@ -80,7 +98,52 @@ func OpenApprovals(path string) (*ApprovalStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &ApprovalStore{db: db, PendingTTL: 30 * time.Minute, UseWindow: 15 * time.Minute, now: func() time.Time { return time.Now().UTC() }}, nil
+	// Erased arguments are overwritten in the file, not just unlinked.
+	if _, err := db.Exec(`PRAGMA secure_delete=ON`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// One pending request per exact call. Files from before this index may
+	// hold duplicates: keep the oldest, close the rest.
+	if _, err := db.Exec(`UPDATE edge_approvals SET state=?, args=NULL WHERE state=? AND EXISTS (
+		SELECT 1 FROM edge_approvals o WHERE o.state=? AND o.org_id=edge_approvals.org_id AND o.edge_id=edge_approvals.edge_id
+		AND o.agent_id=edge_approvals.agent_id AND o.tool=edge_approvals.tool AND o.args_digest=edge_approvals.args_digest
+		AND (o.created_at < edge_approvals.created_at OR (o.created_at = edge_approvals.created_at AND o.id < edge_approvals.id)))`,
+		ApprovalExpired, ApprovalPending, ApprovalPending); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS edge_approvals_one_pending
+		ON edge_approvals(org_id, edge_id, agent_id, tool, args_digest) WHERE state='pending'`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s := &ApprovalStore{db: db, PendingTTL: 30 * time.Minute, UseWindow: 15 * time.Minute, SweepInterval: time.Minute, now: func() time.Time { return time.Now().UTC() }}
+	// Close whatever expired while the edge was down, before serving anything.
+	if err := s.expire(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// RunSweeper closes expired approvals, erasing their arguments, every
+// SweepInterval until ctx ends, whether or not any request arrives.
+func (s *ApprovalStore) RunSweeper(ctx context.Context) {
+	every := s.SweepInterval
+	if every <= 0 {
+		every = time.Minute
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_ = s.expire(ctx)
+		}
+	}
 }
 
 func (s *ApprovalStore) Close() error { return s.db.Close() }
@@ -115,25 +178,35 @@ func (s *ApprovalStore) expire(ctx context.Context) error {
 // there is none, so an agent retrying while it waits does not flood approvers.
 // created reports whether this call opened a new request (and should notify).
 func (s *ApprovalStore) Request(ctx context.Context, a Approval, args json.RawMessage) (out Approval, created bool, err error) {
-	if err := s.expire(ctx); err != nil {
-		return Approval{}, false, err
+	// The unique index on pending requests makes create-or-reuse atomic: of
+	// concurrent identical requests one insert wins and the rest read it. The
+	// loop covers that request being decided or expiring in between.
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := s.expire(ctx); err != nil {
+			return Approval{}, false, err
+		}
+		now := s.now()
+		n := a
+		n.ID, n.State, n.CreatedAt, n.ExpiresAt = approvalID(), ApprovalPending, now, now.Add(s.PendingTTL)
+		res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO edge_approvals(id, org_id, edge_id, agent_id, user_id, tool, args_digest, args, state, created_at, expires_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, n.ID, n.OrgID, n.EdgeID, n.AgentID, n.UserID, n.Tool, n.ArgsDigest, string(args), n.State, s.ts(n.CreatedAt), s.ts(n.ExpiresAt))
+		if err != nil {
+			return Approval{}, false, err
+		}
+		if k, _ := res.RowsAffected(); k == 1 {
+			n.Args = args
+			return n, true, nil
+		}
+		list, err := s.query(ctx, `WHERE org_id=? AND edge_id=? AND agent_id=? AND tool=? AND args_digest=? AND state=?`,
+			a.OrgID, a.EdgeID, a.AgentID, a.Tool, a.ArgsDigest, ApprovalPending)
+		if err != nil {
+			return Approval{}, false, err
+		}
+		if len(list) == 1 && list[0].State == ApprovalPending {
+			return list[0], false, nil
+		}
 	}
-	var id string
-	err = s.db.QueryRowContext(ctx, `SELECT id FROM edge_approvals WHERE org_id=? AND agent_id=? AND tool=? AND args_digest=? AND state=? ORDER BY created_at LIMIT 1`,
-		a.OrgID, a.AgentID, a.Tool, a.ArgsDigest, ApprovalPending).Scan(&id)
-	if err == nil {
-		existing, err := s.Get(ctx, id)
-		return existing, false, err
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return Approval{}, false, err
-	}
-	now := s.now()
-	a.ID, a.State, a.CreatedAt, a.ExpiresAt = approvalID(), ApprovalPending, now, now.Add(s.PendingTTL)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO edge_approvals(id, org_id, edge_id, agent_id, user_id, tool, args_digest, args, state, created_at, expires_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, a.ID, a.OrgID, a.EdgeID, a.AgentID, a.UserID, a.Tool, a.ArgsDigest, string(args), a.State, s.ts(a.CreatedAt), s.ts(a.ExpiresAt))
-	a.Args = args
-	return a, err == nil, err
+	return Approval{}, false, errors.New("approval request contended; retry")
 }
 
 // Decide records a human decision on a pending approval. An approval must
@@ -170,23 +243,16 @@ func (s *ApprovalStore) Consume(ctx context.Context, orgID, agentID, tool, diges
 	if err := s.expire(ctx); err != nil {
 		return "", err
 	}
+	// One statement, so of concurrent identical calls exactly one gets it.
 	var id string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM edge_approvals WHERE org_id=? AND agent_id=? AND tool=? AND args_digest=? AND state=? ORDER BY created_at LIMIT 1`,
-		orgID, agentID, tool, digest, ApprovalApproved).Scan(&id)
+	err := s.db.QueryRowContext(ctx, `UPDATE edge_approvals SET state=?, args=NULL WHERE id=(
+		SELECT id FROM edge_approvals WHERE org_id=? AND agent_id=? AND tool=? AND args_digest=? AND state=? AND expires_at > ?
+		ORDER BY created_at LIMIT 1) AND state=? RETURNING id`,
+		ApprovalUsed, orgID, agentID, tool, digest, ApprovalApproved, s.ts(s.now()), ApprovalApproved).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
-	if err != nil {
-		return "", err
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE edge_approvals SET state=?, args=NULL WHERE id=? AND state=?`, ApprovalUsed, id, ApprovalApproved)
-	if err != nil {
-		return "", err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return "", nil // lost a race with a concurrent retry: it gets the execution
-	}
-	return id, nil
+	return id, err
 }
 
 // Get returns one approval.
@@ -221,6 +287,7 @@ func (s *ApprovalStore) query(ctx context.Context, where string, args ...any) ([
 		return nil, err
 	}
 	defer rows.Close()
+	now := s.now()
 	var out []Approval
 	for rows.Next() {
 		var a Approval
@@ -237,6 +304,10 @@ func (s *ApprovalStore) query(ctx context.Context, where string, args ...any) ([
 		if decidedAt.Valid {
 			t, _ := time.Parse(time.RFC3339Nano, decidedAt.String)
 			a.DecidedAt = &t
+		}
+		// Past expiry but not yet swept: report it closed, never its arguments.
+		if (a.State == ApprovalPending || a.State == ApprovalApproved) && !a.ExpiresAt.After(now) {
+			a.State, a.Args = ApprovalExpired, nil
 		}
 		out = append(out, a)
 	}

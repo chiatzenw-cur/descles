@@ -511,8 +511,10 @@ func edgeApprovals(logger *slog.Logger, spansPath string) (*edge.ApprovalAdmin, 
 	if err != nil {
 		return nil, func() {}, err
 	}
-	logger.Info("approvals enabled", "admin", "/admin/", "store", path)
-	return &edge.ApprovalAdmin{Store: store, Token: token}, func() { _ = store.Close() }, nil
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	go store.RunSweeper(sweepCtx)
+	logger.Info("approvals enabled", "admin", "/admin/", "store", path, "expiry_sweep", store.SweepInterval)
+	return &edge.ApprovalAdmin{Store: store, Token: token}, func() { stopSweep(); _ = store.Close() }, nil
 }
 
 // policyDigest identifies the policy in force, so an evaluation manifest can
