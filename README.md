@@ -76,6 +76,10 @@ the managed-edge protocol. It is not part of this repository.
 | `pkg/policy` | Policy engine |
 | `pkg/trajectory` | Open trace format |
 
+## Security
+
+Report vulnerabilities privately; see [SECURITY.md](SECURITY.md) (outreach@descles.com).
+
 ## License
 
 [Elastic License 2.0](LICENSE). You may use, modify and self-host this edge, including in production and
