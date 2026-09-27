@@ -35,6 +35,9 @@ type ApprovalAdmin struct {
 	Recent RecentSpans
 	// Policy is what the edge enforces, for the console's Policy panel.
 	Policy *policy.Holder
+	// GroupOf resolves an agent's group, as the gateway does, so checks and
+	// replays apply group rules. Optional.
+	GroupOf func(agentID string) string
 	// Panels are extra console panels from extensions.
 	Panels []AdminPanel
 }
@@ -136,7 +139,6 @@ func (a *ApprovalAdmin) page(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	_, _ = io.WriteString(w, adminPage)
 }
-
 
 // TraceRecord is one locally recorded span as the admin API returns it.
 type TraceRecord struct {

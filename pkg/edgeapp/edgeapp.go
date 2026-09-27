@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -264,6 +265,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		admin.Traces = metered
 		admin.Recent = metered
 		admin.Policy = holder
+		admin.GroupOf = mcp.GroupOf
 		for _, e := range mcp.Extensions {
 			if p, ok := e.(edge.AdminPanel); ok {
 				admin.Panels = append(admin.Panels, p)
@@ -549,7 +551,13 @@ func policyDigest(h *policy.Holder) string {
 	if p == nil {
 		return ""
 	}
-	b, err := json.Marshal(p.Snapshot())
+	// With a local floor, the floor is part of what governs a run: two edges
+	// with the same control-plane policy but different floors differ.
+	var v any = p.Snapshot()
+	if f := p.Floor(); f != nil {
+		v = map[string]any{"rules": p.Snapshot(), "floor": f.Snapshot()}
+	}
+	b, err := json.Marshal(v)
 	if err != nil {
 		return ""
 	}
@@ -586,10 +594,18 @@ func startSystemWork(ctx context.Context, logger *slog.Logger, g *edge.MCPGatewa
 	var starters []edge.SystemStarter
 	seen := map[any]bool{}
 	add := func(v any) {
-		if s, ok := v.(edge.SystemStarter); ok && !seen[v] {
-			seen[v] = true
-			starters = append(starters, s)
+		s, ok := v.(edge.SystemStarter)
+		if !ok {
+			return
 		}
+		// Only comparable values can be map keys; others are started as is.
+		if reflect.TypeOf(v).Comparable() {
+			if seen[v] {
+				return
+			}
+			seen[v] = true
+		}
+		starters = append(starters, s)
 	}
 	for _, e := range g.Extensions {
 		add(e)

@@ -81,7 +81,7 @@ async function policyPanel(){const v=view();v.textContent="Loading…";
  const d=await api("/admin/policy");v.textContent="";
  const g=el("div",{className:"grid"});
  const rules=el("div",{className:"card"});rules.append(el("div",{className:"tool"},d.floor?"Control plane policy":"Policy"),el("pre",{},JSON.stringify(d.rules,null,2)));g.append(rules);
- if(d.floor){const f=el("div",{className:"card"});f.append(el("div",{className:"tool"},"Local floor (this edge's policy.yaml)"),el("div",{className:"meta"},"Every decision is the stricter of the two; the control plane cannot loosen this."),el("pre",{},JSON.stringify(d.floor,null,2)));g.append(f)}
+ if(d.floor){const f=el("div",{className:"card"});f.append(el("div",{className:"tool"},"Local floor (this edge's policy.yaml)"),el("div",{className:"meta"},"Every decision is the stricter of the two; the control plane cannot loosen this. Read at startup: restart the edge after editing policy.yaml."),el("pre",{},JSON.stringify(d.floor,null,2)));g.append(f)}
  v.append(g);
  const chk=el("div",{className:"card"});chk.append(el("div",{className:"tool"},"Check a call"));
  const agent=el("input",{placeholder:"agent id"}),tool=el("input",{placeholder:"connector.tool or local.bash"}),args=el("textarea",{rows:3,placeholder:'{"command": "rm -rf build"}'});

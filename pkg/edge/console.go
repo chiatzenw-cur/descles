@@ -127,8 +127,11 @@ func (a *ApprovalAdmin) policyCheck(w http.ResponseWriter, r *http.Request) {
 	if p == nil {
 		p = policy.AllowAll()
 	}
+	if in.Group == "" && a.GroupOf != nil {
+		in.Group = a.GroupOf(in.Agent)
+	}
 	own, floor, hasFloor := p.DecisionParts(in.Agent, in.Group, in.Tool, in.Args)
-	out := map[string]any{"decision": p.ToolDecisionInArgs(in.Agent, in.Group, in.Tool, in.Args), "rules": own}
+	out := map[string]any{"decision": p.ToolDecisionInArgs(in.Agent, in.Group, in.Tool, in.Args), "rules": own, "group": in.Group}
 	if hasFloor {
 		out["floor"] = floor
 	}
@@ -166,6 +169,9 @@ func (a *ApprovalAdmin) policyReplay(w http.ResponseWriter, r *http.Request) {
 		}
 		checked++
 		group := ""
+		if a.GroupOf != nil {
+			group = a.GroupOf(row.Agent)
+		}
 		now := string(p.ToolDecisionInArgs(row.Agent, group, row.Name, nil))
 		if now != row.Decision {
 			changes = append(changes, change{At: row.At, Agent: row.Agent, Tool: row.Name, Recorded: row.Decision, Now: now})
