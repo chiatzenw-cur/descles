@@ -7,6 +7,10 @@
 *Released binaries, a real Claude Code session and a real model. The denial on screen comes from the edge,
 not from the model.*
 
+**Measured:** agents answering from organization context used 69–76% fewer tokens than agents calling
+CRM, billing and support themselves, with the same answers and every boundary holding.
+[Method, results, limits and raw evidence](docs/benchmarks/ORG-CONTEXT-BENCHMARK.md).
+
 The Descles edge sits between your agents (Claude Code, Codex, Hermes, your own) and the models and tools
 they use. Provider keys and tool credentials stay on the edge, calls are checked against your policy, and
 decisions are recorded on the edge. Its source is available under ELv2 so you can inspect the code and outbound data contract:
