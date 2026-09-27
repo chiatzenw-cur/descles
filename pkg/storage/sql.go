@@ -40,20 +40,21 @@ func NewSQLite(path string) (Storage, error) {
 	if path == "" {
 		path = "descles.db"
 	}
-	db, err := sql.Open("sqlite", path)
+	// Pragmas go in the DSN so every pooled connection gets them: a PRAGMA
+	// run with db.Exec reaches only one connection, and the others then fail
+	// concurrent writes with SQLITE_BUSY at once instead of waiting.
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	dsn := path + sep + "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL;",
-		"PRAGMA busy_timeout=5000;",
-		"PRAGMA foreign_keys=ON;",
-		"PRAGMA synchronous=NORMAL;",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("apply pragma: %w", err)
-		}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	s := &SQL{db: db}
 	if err := s.migrate(); err != nil {

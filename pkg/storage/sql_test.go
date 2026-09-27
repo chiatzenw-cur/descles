@@ -2,7 +2,9 @@ package storage_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,5 +125,34 @@ func TestSQLitePersistsAcrossReopen(t *testing.T) {
 	defer st2.Close()
 	if recent, _ := st2.ListRecent(context.Background(), 10); len(recent) != 1 {
 		t.Fatalf("after reopen ListRecent = %d, want 1", len(recent))
+	}
+}
+
+// Concurrent writers wait for each other instead of failing: the edge fails
+// closed on a single failed audit write, so SQLITE_BUSY must not surface
+// under ordinary load (it did when busy_timeout reached one connection only).
+func TestSQLiteConcurrentWritersDoNotFailBusy(t *testing.T) {
+	s, err := storage.NewSQLite(filepath.Join(t.TempDir(), "spans.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var wg sync.WaitGroup
+	errs := make(chan error, 400)
+	for g := 0; g < 16; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				if err := s.PutSpan(context.Background(), mkSpan(fmt.Sprintf("t%d", g), fmt.Sprintf("s%d-%d", g, i), "agent", "a", "m", 1, 1, 0, "ok")); err != nil {
+					errs <- err
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent write failed: %v", err)
 	}
 }
