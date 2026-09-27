@@ -1,5 +1,6 @@
 # Descles edge: the data plane only (no hosted control-plane code).
 # Build:  docker build -t descles/edge .
+# the private repo with the vendor license verification key.
 # Use:    descles edge init --image descles/edge   (or the published, digest-pinned image)
 
 FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build

@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +22,7 @@ import (
 	"time"
 
 	"github.com/chiatzenw-cur/descles/pkg/config"
+	"github.com/chiatzenw-cur/descles/pkg/edge"
 	"github.com/chiatzenw-cur/descles/pkg/edgeapp"
 )
 
@@ -186,5 +192,122 @@ func TestHostedAndValidation(t *testing.T) {
 		if _, err := Generate(bad); err == nil {
 			t.Errorf("case %d accepted", i)
 		}
+	}
+}
+
+func TestSelfhostInitKeepsReportingOffAndUsesSignedGrants(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "selfhost")
+	key := strings.Repeat("ab", 32)
+	_, err := Generate(Options{Dir: dir, Mode: "selfhost", HostedURL: "http://127.0.0.1:8080", OrgID: "org_123", BundleKey: key, UID: -1, GID: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(filepath.Join(dir, "edge.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"DESCLES_EDGE_REPORT_URL=off", "DESCLES_EDGE_BUNDLE_URL=http://127.0.0.1:8080/edge/bundle", "DESCLES_EDGE_REPORT_TOKEN_FILE=/config/secrets/report-token"} {
+		if !strings.Contains(string(env), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(string(env), "DESCLES_EDGE_OUTBOX_DB") || strings.Contains(string(env), "DESCLES_EDGE_REPORT_URL=http") {
+		t.Fatal("selfhost unexpectedly exports usage metadata")
+	}
+}
+
+func TestSelfhostEdgeFetchesBundleWithoutReporting(t *testing.T) {
+	pub, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const agentKey = "vk_customer_agent"
+	sum := sha256.Sum256([]byte(agentKey))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/edge/bundle" || r.Header.Get("Authorization") != "Bearer edge-sync-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		now := time.Now().UTC()
+		signed, err := edge.SignBundle(edge.BundlePayload{Version: 1, OrgID: "org_test", Policy: json.RawMessage(`{}`), Grants: []edge.Grant{{KeySHA256: hex.EncodeToString(sum[:]), AgentID: "agent_test", Permission: "*", Resource: "*"}}, IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute)}, private)
+		if err != nil {
+			t.Error(err)
+			http.Error(w, "sign", 500)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(signed)
+	}))
+	defer server.Close()
+	dir := filepath.Join(t.TempDir(), "selfhost-live")
+	_, err = Generate(Options{Dir: dir, Mode: "selfhost", HostedURL: server.URL, OrgID: "org_test", BundleKey: hex.EncodeToString(pub), Providers: []string{"anthropic"}, UID: -1, GID: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config", "secrets", "report-token"), []byte("edge-sync-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config", "secrets", "anthropic-key"), []byte("sk-local"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Join(dir, "edge.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.HasPrefix(line, "#") {
+			continue
+		}
+		v = strings.ReplaceAll(v, "/config/", filepath.ToSlash(filepath.Join(dir, "config"))+"/")
+		v = strings.ReplaceAll(v, "/data/", filepath.ToSlash(filepath.Join(dir, "data"))+"/")
+		t.Setenv(k, v)
+	}
+	_ = f.Close()
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	t.Setenv("DESCLES_ADDR", addr)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- edgeapp.Run(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("edge exit: %v", err)
+		}
+	}()
+	var response *http.Response
+	for i := 0; i < 50; i++ {
+		response, err = http.Get("http://" + addr + "/healthz")
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	req, _ := http.NewRequest(http.MethodGet, "http://"+addr+"/mcp", nil)
+	req.Header.Set("Authorization", "Bearer "+agentKey)
+	response, err = http.DefaultClient.Do(req)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("signed grant not active: %v %v", response, err)
+	}
+	_ = response.Body.Close()
+	if _, err := os.Stat(filepath.Join(dir, "data", "outbox.db")); err == nil {
+		t.Fatal("metadata outbox created despite reporting off")
 	}
 }

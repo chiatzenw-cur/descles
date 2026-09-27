@@ -36,15 +36,15 @@ func runEdgeInit(args []string) error {
 	var providers string
 	var connectors connectorFlags
 	fs.StringVar(&o.Dir, "dir", "descles-edge", "output directory")
-	fs.StringVar(&o.Mode, "mode", "", "standalone (no hosted control plane) or hosted")
+	fs.StringVar(&o.Mode, "mode", "", "standalone, selfhost (customer control plane), or legacy hosted")
 	fs.StringVar(&o.EdgeID, "edge-id", "", "stable edge id")
 	fs.StringVar(&providers, "providers", "", "comma list: anthropic,openai")
 	fs.StringVar(&o.OpenAIBase, "openai-base", "", "OpenAI-compatible upstream base URL")
 	fs.Var(&connectors, "connector", "MCP connector id=url (repeatable)")
 	fs.StringVar(&o.AgentName, "agent", "", "standalone: id of the first agent")
-	fs.StringVar(&o.HostedURL, "control-plane", "", "hosted: control plane origin (https://...)")
-	fs.StringVar(&o.OrgID, "org", "", "hosted: organization id")
-	fs.StringVar(&o.BundleKey, "bundle-key", "", "hosted: control plane Ed25519 bundle key (hex), from a trusted channel")
+	fs.StringVar(&o.HostedURL, "control-plane", "", "managed: control plane origin (https://...)")
+	fs.StringVar(&o.OrgID, "org", "", "managed: organization id")
+	fs.StringVar(&o.BundleKey, "bundle-key", "", "managed: control plane Ed25519 bundle key (hex), from a trusted channel")
 	fs.StringVar(&o.Image, "image", "", "edge container image (default "+edgeinit.DefaultImage+")")
 	fs.IntVar(&o.Port, "port", 0, "loopback port for the edge (default 8081)")
 	fs.BoolVar(&o.OrgContext, "org-context", false, "add organization-context config (requires the enterprise edge image)")
@@ -163,12 +163,12 @@ func prompt(o *edgeinit.Options) error {
 		}
 		return line
 	}
-	o.Mode = ask("Mode: standalone (no Descles cloud) or hosted", nonEmpty(o.Mode, "standalone"))
+	o.Mode = ask("Mode: standalone, selfhost (customer control plane), or legacy hosted", nonEmpty(o.Mode, "standalone"))
 	o.EdgeID = ask("Edge id", nonEmpty(o.EdgeID, "edge-1"))
 	if len(o.Providers) == 0 {
 		o.Providers = splitList(ask("Model providers (anthropic,openai)", "anthropic,openai"))
 	}
-	if o.Mode == "hosted" {
+	if o.Mode == "hosted" || o.Mode == "selfhost" {
 		o.HostedURL = ask("Control plane origin", o.HostedURL)
 		o.OrgID = ask("Organization id", o.OrgID)
 		o.BundleKey = ask("Bundle public key (hex, from your console over a trusted channel)", o.BundleKey)

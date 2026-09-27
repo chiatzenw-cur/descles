@@ -5,7 +5,7 @@
 //	descles connect openai      --edge https://descles.internal --key <agent key>   (Hermes, SDKs, other agents)
 //	descles hook claude-code pre|post --edge <url> --key-file <path>              (installed by connect)
 //	descles key [--file <path>]                                                   (Claude Code apiKeyHelper)
-//	descles edge init [--dir descles-edge] [--mode standalone|hosted] [--yes]     (generate a VPC edge deployment)
+//	descles edge init [--dir descles-edge] [--mode standalone|selfhost|hosted] [--yes]
 //	descles edge up   [--dir descles-edge]                                        (start it with docker compose)
 //	descles approvals list | approve <id> | deny <id> --edge <url> --admin-token-file <path>
 package main

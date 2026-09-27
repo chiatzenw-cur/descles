@@ -37,9 +37,9 @@ type Options struct {
 	OpenAIBase string   // OpenAI-compatible upstream, default api.openai.com
 	Connectors []Connector
 	AgentName  string // standalone: first agent id
-	HostedURL  string // hosted: control plane origin, e.g. https://app.descles.com
-	OrgID      string // hosted
-	BundleKey  string // hosted: pinned Ed25519 public key (hex)
+	HostedURL  string // managed: customer control plane origin
+	OrgID      string // managed
+	BundleKey  string // managed: pinned Ed25519 public key (hex)
 	Image      string
 	Port       int
 	// OrgContext adds organization-context configuration. It needs the
@@ -68,8 +68,8 @@ func (o *Options) normalize() error {
 	if o.Mode == "" {
 		o.Mode = "standalone"
 	}
-	if o.Mode != "standalone" && o.Mode != "hosted" {
-		return errors.New("mode must be standalone or hosted")
+	if o.Mode != "standalone" && o.Mode != "hosted" && o.Mode != "selfhost" {
+		return errors.New("mode must be standalone, selfhost or hosted")
 	}
 	if o.EdgeID == "" {
 		o.EdgeID = "edge-1"
@@ -107,17 +107,17 @@ func (o *Options) normalize() error {
 	if !idPattern.MatchString(o.AgentName) {
 		return errors.New("agent name must be letters, digits, '-' or '_'")
 	}
-	if o.Mode == "hosted" {
+	if o.Mode == "hosted" || o.Mode == "selfhost" {
 		u, err := url.Parse(o.HostedURL)
-		if err != nil || u.Scheme != "https" || u.Host == "" || (u.Path != "" && u.Path != "/") {
-			return errors.New("hosted mode needs the control plane origin as https://host")
+		if err != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"))) || (u.Path != "" && u.Path != "/") {
+			return errors.New("managed mode needs an HTTPS control plane origin (HTTP only on loopback)")
 		}
 		o.HostedURL = strings.TrimRight(o.HostedURL, "/")
 		if !idPattern.MatchString(o.OrgID) {
-			return errors.New("hosted mode needs your organization id")
+			return errors.New("managed mode needs your organization id")
 		}
 		if b, err := hex.DecodeString(o.BundleKey); err != nil || len(b) != 32 {
-			return errors.New("hosted mode needs the control plane's Ed25519 bundle key (64 hex characters) from a trusted channel")
+			return errors.New("managed mode needs the control plane's Ed25519 bundle key (64 hex characters) from a trusted channel")
 		}
 	}
 	if o.Image == "" {
@@ -178,9 +178,13 @@ func Generate(o Options) (*Result, error) {
 		env = append(env,
 			"# Organization context (enterprise edge image).",
 			"DESCLES_ORGCTX_DB=/data/org.db",
-			"DESCLES_ORGCTX_EXTRACTORS=/config/orgctx-extractors.yaml")
+			"DESCLES_ORGCTX_EXTRACTORS=/config/orgctx-extractors.yaml",
+			"DESCLES_LICENSE_FILE=/config/secrets/license.json")
 	}
 	secrets := []string{}
+	if o.OrgContext {
+		secrets = append(secrets, "license.json")
+	}
 	for _, p := range o.Providers {
 		switch p {
 		case "openai":
@@ -210,15 +214,17 @@ func Generate(o Options) (*Result, error) {
 		res.AgentKey = key
 	} else {
 		env = append(env,
-			"# Hosted: signed policy and agent grants are pulled from the control plane;",
-			"# only metadata (tokens, cost, tool names, decisions) is reported.",
+			"# Managed: signed policy and agent grants are pulled from the control plane.",
 			"DESCLES_EDGE_ORG_ID="+o.OrgID,
-			"DESCLES_EDGE_REPORT_URL="+o.HostedURL+"/edge/spans",
 			"DESCLES_EDGE_BUNDLE_URL="+o.HostedURL+"/edge/bundle",
 			"DESCLES_EDGE_BUNDLE_PUBKEY="+strings.ToLower(o.BundleKey),
 			"DESCLES_EDGE_BUNDLE_CACHE=/data/bundle.json",
-			"DESCLES_EDGE_OUTBOX_DB=/data/outbox.db",
 			"DESCLES_EDGE_REPORT_TOKEN_FILE=/config/secrets/report-token")
+		if o.Mode == "hosted" {
+			env = append(env, "DESCLES_EDGE_REPORT_URL="+o.HostedURL+"/edge/spans", "DESCLES_EDGE_OUTBOX_DB=/data/outbox.db")
+		} else {
+			env = append(env, "DESCLES_EDGE_REPORT_URL=off")
+		}
 		secrets = append(secrets, "report-token")
 	}
 	if err := write("edge.env", strings.Join(env, "\n")+"\n", 0o644); err != nil {
@@ -240,7 +246,7 @@ func Generate(o Options) (*Result, error) {
 		return nil, err
 	}
 	pol := policyYAML
-	if o.Mode == "hosted" {
+	if o.Mode == "hosted" || o.Mode == "selfhost" {
 		// Managed: this file is a floor under the control plane's policy, so
 		// a budget here would silently cap every agent. Leave it to the
 		// control plane unless the operator uncomments it.
@@ -374,7 +380,7 @@ func readme(o Options, r *Result) string {
 		b.WriteString("Standalone mode: no hosted control plane. Nothing leaves this network.\n")
 		b.WriteString("Agent keys live in `config/keys.json` as SHA-256 hashes; `" + o.AgentName + "` was created by `descles edge init`.\n\n")
 	} else {
-		b.WriteString("Hosted mode: policy and agent grants come signed from " + o.HostedURL + "; only metadata is reported.\n\n")
+		b.WriteString("Managed mode: policy and agent grants come signed from " + o.HostedURL + ".\n\n")
 	}
 	b.WriteString("## Next\n\n")
 	for i, n := range r.Next {

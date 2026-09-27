@@ -33,7 +33,8 @@ import (
 )
 
 // Run is the customer-side data plane. Provider credentials, prompts and
-// tool arguments stay here. Only a strict usage/cost metadata contract leaves.
+// tool arguments stay here. Reporting is optional and disabled by default in
+// standalone and customer-hosted deployments.
 // It serves until ctx is cancelled, then shuts down gracefully.
 //
 // Plugins add extensions (served at /mcp/<id>) and result observers. The
@@ -66,15 +67,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	if err != nil {
 		return err
 	}
-	// "off" is the standalone open-core edge: no hosted control plane, no
-	// metadata leaves at all. Everything is still recorded locally.
-	offline := reportURL == "off"
+	// "off" disables outbound metadata. A customer control plane can still
+	// distribute signed grants, while detailed records remain on this edge.
+	noReport := reportURL == "off"
 	var parsed *url.URL
-	if offline {
-		if strings.TrimSpace(os.Getenv("DESCLES_EDGE_BUNDLE_URL")) != "" {
-			return fmt.Errorf("DESCLES_EDGE_REPORT_URL=off cannot be combined with a hosted policy bundle")
-		}
-	} else {
+	if !noReport {
 		if reportURL == "" || reportToken == "" {
 			return fmt.Errorf("edge mode requires report URL and token (or DESCLES_EDGE_REPORT_URL=off for a standalone edge)")
 		}
@@ -90,8 +87,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	bundleURL := strings.TrimSpace(os.Getenv("DESCLES_EDGE_BUNDLE_URL"))
 	if bundleURL != "" {
 		bundleEndpoint, parseErr := url.Parse(bundleURL)
-		if parseErr != nil || bundleEndpoint.Scheme != parsed.Scheme || bundleEndpoint.Host != parsed.Host || bundleEndpoint.Path != "/edge/bundle" || bundleEndpoint.RawQuery != "" || bundleEndpoint.Fragment != "" {
-			return fmt.Errorf("DESCLES_EDGE_BUNDLE_URL must share the report URL origin and end in /edge/bundle")
+		if parseErr != nil || bundleEndpoint.Host == "" || bundleEndpoint.Path != "/edge/bundle" || bundleEndpoint.RawQuery != "" || bundleEndpoint.Fragment != "" || (bundleEndpoint.Scheme != "https" && !(bundleEndpoint.Scheme == "http" && isLoopbackHost(bundleEndpoint.Hostname()))) {
+			return fmt.Errorf("DESCLES_EDGE_BUNDLE_URL must be an HTTPS /edge/bundle endpoint (HTTP only for loopback testing)")
+		}
+		if !noReport && (bundleEndpoint.Scheme != parsed.Scheme || bundleEndpoint.Host != parsed.Host) {
+			return fmt.Errorf("DESCLES_EDGE_BUNDLE_URL must share the report URL origin when reporting is enabled")
+		}
+		if reportToken == "" {
+			return fmt.Errorf("signed bundle mode requires DESCLES_EDGE_REPORT_TOKEN as an edge sync token")
 		}
 		orgID = strings.TrimSpace(os.Getenv("DESCLES_EDGE_ORG_ID"))
 		pubRaw := strings.TrimSpace(os.Getenv("DESCLES_EDGE_BUNDLE_PUBKEY"))
@@ -101,7 +104,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 			return fmt.Errorf("signed bundle mode requires org ID, Ed25519 public key and cache path")
 		}
 		bundle = edge.NewBundleState(orgID, ed25519.PublicKey(pub), cachePath)
-		// The local policy file bounds the control plane's policy: the hosted
+		// The local policy file bounds the control plane's policy: the customer
 		// side can tighten it but never loosen what this edge denies, holds
 		// for approval or caps.
 		if cfg.PolicyFile != "" {
@@ -150,7 +153,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		return err
 	}
 	var queue *edge.Outbox
-	if !offline {
+	if !noReport {
 		if queue, err = edge.OpenOutbox(strings.TrimSpace(os.Getenv("DESCLES_EDGE_OUTBOX_DB"))); err != nil {
 			_ = local.Close()
 			return err
@@ -200,7 +203,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		return nil
 	}
 	var reporter *edge.Reporter
-	if !offline {
+	if !noReport {
 		reporter = &edge.Reporter{Outbox: queue, URL: reportURL, Token: reportToken, Client: provider.NoRedirectClient(10 * time.Second)}
 	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())

@@ -25,9 +25,11 @@ and never sees a credential.
 
 - `--mode standalone` (default): no Descles cloud at all. Agent keys are generated locally and stored as
   hashes in `config/keys.json`, and nothing is reported anywhere (`DESCLES_EDGE_REPORT_URL=off`).
-- `--mode hosted`: pulls the signed policy and agent grants from your Descles control plane and reports
-  metadata only. Pass `--control-plane`, `--org` and `--bundle-key` (the key must come from a trusted
-  channel).
+- `--mode selfhost`: pulls signed policy and agent grants from your organization's own control plane
+  without reporting metadata. Pass `--control-plane`, `--org` and `--bundle-key` (the key must come from
+  a trusted channel).
+- `--mode hosted`: legacy Descles-operated control plane mode. It pulls bundles and reports metadata;
+  use only while migrating an existing deployment.
 - The generated compose file marks an unpinned image. Pin it by digest before production.
   `Dockerfile` builds the edge-only image (no control-plane code) if you build your own.
 

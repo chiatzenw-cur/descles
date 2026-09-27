@@ -9,7 +9,7 @@ not from the model.*
 
 The Descles edge sits between your agents (Claude Code, Codex, Hermes, your own) and the models and tools
 they use. Provider keys and tool credentials stay on the edge, calls are checked against your policy, and
-decisions are recorded on the edge. It is open source so you can check exactly what it does with your data:
+decisions are recorded on the edge. Its source is available under ELv2 so you can inspect the code and outbound data contract:
 see [docs/DATA-FLOWS.md](docs/DATA-FLOWS.md).
 
 ```
@@ -52,6 +52,8 @@ The edge runs as a container (`ghcr.io/chiatzenw-cur/descles-edge`, pin it by di
 binary. Signed binaries are on [Releases](https://github.com/chiatzenw-cur/descles/releases). To check that a
 release is what this source builds, see [docs/VERIFY-RELEASE.md](docs/VERIFY-RELEASE.md).
 
+Use the generated Compose file to run the edge on a host you control.
+
 No server of your own? [deploy/aws](deploy/aws/README.md) runs the edge in your AWS account from one
 CloudFormation stack, on your domain or on a CloudFront address with no domain needed.
 
@@ -81,118 +83,91 @@ descles doctor --edge http://127.0.0.1:8081 --admin-token-file my-edge/config/se
   or use `descles approvals list | approve <id> | deny <id> --edge ... --admin-token-file ...`.
   To notify approvers, set `DESCLES_EDGE_APPROVAL_WEBHOOK_FILE` in `my-edge/.env` (arguments are not sent).
 
-## 2. Managed edge with the Descles control plane
+## 2. Team: your own control plane, one edge for everyone
 
-The edge still runs in your network and still holds your provider keys and tool credentials. The Descles
-control plane (`https://api.gw.descles.com`, console at [descles.com](https://descles.com)) manages
-identities, delegation and policy, and signs a time-limited bundle that the edge pulls about every 30 s.
-The edge sends back only the metadata in [DATA-FLOWS](docs/DATA-FLOWS.md). Agents talk to your edge,
-never to Descles.
-
-The API calls below authenticate with your console session: `Authorization: Bearer $SESSION`.
+For a team, the organization runs one edge and one Team control plane, both in its own network. The
+control plane manages agent identities and policy and signs a short-lived bundle that the edge pulls;
+the edge keeps provider keys, tool credentials and records, and reports nothing to Descles. The Team
+control plane and the organization-context edge are paid, delivered as images that verify an offline
+signed subscription file. This public edge works without one. [Contact us](mailto:outreach@descles.com).
 
 ### For org admins
 
-1. **Create the organization.** Sign up at [descles.com](https://descles.com). Your org id (`$ORG`) is shown
-   in the console.
-
-2. **Deploy the edge.** Create a token that can only fetch bundles and report metadata (it cannot call
-   models or change anything), and fetch the key that signs your bundles:
+1. **Run the control plane** behind your internal TLS ingress (below: `https://control.internal`), with
+   the delivered `compose.control.yml`, an admin token, a master key and the license file. Then:
 
    ```bash
-   curl -X POST https://api.gw.descles.com/control/orgs/$ORG/keys \
-     -H "Authorization: Bearer $SESSION" -d '{"scopes":["edge.sync","edge.report"]}'
-   # → "token": shown once
-
-   curl https://api.gw.descles.com/edge/bundle-key
-   # → "public_key": check it against the value shown in the console before pinning it
+   C=https://control.internal; H="Authorization: Bearer $ADMIN_TOKEN"
+   curl -H "$H" -d '{"name":"Acme","slug":"acme"}' $C/control/orgs                    # → "id": $ORG
+   curl -H "$H" -d '{"scopes":["edge.sync"]}' $C/control/orgs/$ORG/keys               # edge sync token, shown once
+   curl $C/edge/bundle-key                                                            # check it over a trusted channel
    ```
 
+2. **Deploy the edge** and point it at the control plane:
+
    ```bash
-   descles edge init --yes --dir acme-edge --mode hosted --providers anthropic \
-     --control-plane https://api.gw.descles.com --org $ORG --bundle-key <public_key>
-   echo "<token>"            > acme-edge/config/secrets/report-token
+   descles edge init --yes --dir acme-edge --mode selfhost --providers anthropic      --control-plane https://control.internal --org $ORG --bundle-key <public_key>
+   echo "<sync token>"       > acme-edge/config/secrets/report-token   # legacy name; nothing is reported
    echo "$ANTHROPIC_API_KEY" > acme-edge/config/secrets/anthropic-key
    descles edge up --dir acme-edge
    ```
 
-   Put your internal TLS ingress in front of it (below: `https://descles.internal`). That is the URL your
-   members connect to. The edge refuses any bundle not signed by the key you pinned.
+   Put your TLS ingress in front of it (below: `https://descles.internal`). That is the URL your members
+   connect to. The edge refuses any bundle not signed by the key you pinned.
 
-3. **Set the policy.** It is written in the same YAML as the standalone `policy.yaml` and is signed into
-   every bundle:
+3. **Set the policy.** Same YAML as the standalone `policy.yaml`, signed into every bundle:
 
    ```bash
-   jq -Rs '{raw: .}' policy.yaml | curl -X POST https://api.gw.descles.com/control/policy \
-     -H "Authorization: Bearer $SESSION" --data-binary @-
+   jq -Rs '{raw: .}' policy.yaml | curl -H "$H" --data-binary @- $C/control/policy
    ```
 
    The edge's own `acme-edge/config/policy.yaml` still applies, as a floor: every decision is the
    stricter of the two and every budget the lower cap. The control plane can tighten what your edge
-   enforces but can never loosen it, so a rule you must keep (for example, `billing.*` always needs
-   approval) belongs in that local file.
+   enforces but never loosen it, so a rule you must keep belongs in that local file.
 
-4. **Invite members.** Each invitation sets a ceiling (the tools the member's agents may use, such as
-   `github.*` or `*`, a resource, and a daily budget). Members can delegate only within it.
+4. **Give each member's agent an identity and a key** (shown once), and hand the key over:
 
    ```bash
-   curl -X POST https://api.gw.descles.com/control/team/invites -H "Authorization: Bearer $SESSION" \
-     -d '{"email":"dev@acme.com","name":"Dev","permission":"*","resource":"*","daily_budget_cents":2000}'
+   curl -H "$H" -d '{"name":"dev-laptop-claude","kind":"agent"}' $C/control/orgs/$ORG/agents   # → "id"
+   curl -H "$H" -d '{}' $C/control/agents/<id>/keys                                          # → "key"
    ```
 
-5. **Operate.**
-   - `GET /control/team/members` lists members. `DELETE /control/team/members/{id}` revokes one. Connected
-     edges drop a revoked identity at the next refresh. An edge that cannot reach the control plane keeps
-     its last bundle until the lease ends (10 minutes by default), then stops accepting calls.
-   - Approvals are decided on the edge (`https://descles.internal/admin/`, admin token in
-     `acme-edge/config/secrets/admin-token`). Arguments are shown only there.
+5. **Operate.** `curl -H "$H" -X POST $C/control/agents/<id>/revoke` disables an agent and expires its
+   keys; edges drop it at the next bundle refresh. An edge that cannot reach the control
+   plane keeps its last bundle until the lease ends (10 minutes by default), then stops accepting calls.
+   Approvals are decided on the edge at `https://descles.internal/admin/` (admin token in
+   `acme-edge/config/secrets/admin-token`); arguments are shown only there. If the subscription lapses,
+   running agents keep working and revocations, approvals and bundle refreshes continue; only new
+   management changes pause until a renewed license file is installed.
 
 ### For members
 
-1. **Accept the invitation.** Open it and sign in at [descles.com](https://descles.com) with the invited email.
+Nobody installs an edge of their own: the organization runs one, and you change an endpoint.
 
-2. **Create a key for your agent**, within the ceiling your admin set. It is shown once:
+**Endpoint only, nothing to install.** Set the base URL and your agent key, and point MCP clients at
+the edge:
 
-   ```bash
-   curl -X POST https://api.gw.descles.com/control/team/subagents -H "Authorization: Bearer $SESSION" \
-     -d '{"name":"laptop-claude","permission":"*","resource":"*","daily_budget_cents":500,"expires_at":"2026-12-31T00:00:00Z"}'
-   # → "id"
-   curl -X POST https://api.gw.descles.com/control/team/subagents/<id>/key -H "Authorization: Bearer $SESSION"
-   # → "key"
-   ```
+```bash
+export ANTHROPIC_BASE_URL=https://descles.internal/anthropic   # or OPENAI_BASE_URL=https://descles.internal/v1
+export ANTHROPIC_AUTH_TOKEN=<key>
+# MCP: https://descles.internal/mcp/<connector>, header Authorization: Bearer <key>
+```
 
-   `GET /control/team/access` shows what your admin granted you.
+**With the `descles` CLI** (a single binary, not a service), shell and file actions are also checked
+before they run in Claude Code and Hermes, and the settings are written for you:
 
-3. **Connect your agent to your company's edge** (not to Descles). Nobody installs an edge of their own;
-   the organization runs one, and you change an endpoint.
+```bash
+descles connect claude-code --edge https://descles.internal --key <key>   # settings, hooks, MCP
+descles connect codex       --edge https://descles.internal --key <key>   # model provider, MCP
+descles connect hermes      --edge https://descles.internal --key <key>   # prints settings to paste
+descles doctor --edge https://descles.internal
+```
 
-   **Endpoint only, nothing to install.** Set the base URL and your agent key, and point MCP clients at
-   the edge. Model calls and company tools are then governed:
+`doctor` checks that the edge is reachable, that your key works, that hooks are installed, and that no
+`ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in your shell points around the edge.
 
-   ```bash
-   export ANTHROPIC_BASE_URL=https://descles.internal/anthropic   # or OPENAI_BASE_URL=https://descles.internal/v1
-   export ANTHROPIC_AUTH_TOKEN=<key>
-   # MCP: https://descles.internal/mcp/<connector>, header Authorization: Bearer <key>
-   ```
-
-   **With the `descles` CLI** (a single binary, not a service), you also get shell and file actions checked
-   before they run in Claude Code and Hermes, the settings written for you, and `doctor`:
-
-   ```bash
-   descles connect claude-code --edge https://descles.internal --key <key>   # settings, hooks, MCP
-   descles connect codex       --edge https://descles.internal --key <key>   # model provider, MCP
-   descles connect hermes      --edge https://descles.internal --key <key>   # prints settings to paste
-   descles doctor --edge https://descles.internal
-   ```
-
-   `doctor` checks that the edge is reachable, that your key works, that hooks are installed, and that
-   no `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in your shell points around the edge. Each
-   failure comes with a fix.
-
-4. **Work as usual.** A denied tool shows `Descles: denied` with the reason. A call that needs approval
-   returns an approval id. After someone approves it, repeat the same call.
-
-Per-harness details, and the tool names that policies match on: [docs/CONNECT-AGENTS.md](docs/CONNECT-AGENTS.md).
+A denied tool shows `Descles: denied` with the reason. A call that needs approval returns an approval
+id; after someone approves it, repeat the same call. Per-harness details: [docs/CONNECT-AGENTS.md](docs/CONNECT-AGENTS.md).
 
 ## Edge endpoints
 
@@ -221,16 +196,10 @@ configuration (`descles connect claude-code --playbook-version team@1` sets the 
 | `pkg/policy` | Policy engine |
 | `pkg/trajectory` | Open trace format |
 
-The paid Descles offering builds on this edge through `pkg/edge/extension.go` and the managed-edge protocol,
-and is not in this repository. Where it runs matters more than where its source lives:
-
-| Paid part | Runs | Holds |
-|---|---|---|
-| Organization context, skills mined from runs | On the enterprise edge, in your network (a build of this edge with the extension) | Facts about your customers, people and work; your agents' runs. Stays in your network |
-| Control plane | Hosted by Descles | Identities, delegation, policy, and the metadata listed in [DATA-FLOWS](docs/DATA-FLOWS.md). No prompts, results or keys |
-
-So the organization's data layer is self-hosted even though its code is not open source; what is open is
-the part that decides what leaves your network.
+The paid Descles offering builds on this edge through `pkg/edge/extension.go` and the
+signed-bundle protocol. Its source is maintained in a separate private repository.
+The premium edge and Team control plane both run in the customer's network. The public
+edge is independently buildable and does not require a paid license.
 
 ## Security
 
