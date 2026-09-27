@@ -13,7 +13,7 @@ import (
 	"net/http"
 )
 
-//go:embed index.html app.js style.css brand.css icons.js
+//go:embed index.html app.js edge_features.js style.css brand.css icons.js
 var assets embed.FS
 
 // Handler returns an http.Handler serving the dashboard SPA.

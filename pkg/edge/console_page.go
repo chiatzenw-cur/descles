@@ -20,6 +20,7 @@ nav button[aria-pressed=true]{border-bottom-color:var(--acc);color:var(--acc);fo
 pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:320px;font-size:13px;margin:8px 0}
 button{font:inherit;border-radius:8px;border:1px solid var(--line);padding:6px 14px;cursor:pointer;background:var(--card);color:var(--fg)}
 button.ok{border-color:var(--ok);color:var(--ok)}button.no{border-color:var(--no);color:var(--no)}
+a{color:var(--acc)}.cta{display:inline-block;padding:8px 14px;border-radius:8px;background:var(--acc);color:var(--card);font-weight:600;text-decoration:none}.cta:focus-visible,a:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 input,textarea{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
 textarea{width:100%;box-sizing:border-box;font-family:ui-monospace,monospace;font-size:13px}
@@ -114,7 +115,22 @@ async function contextPanel(){const v=view();v.textContent="";
   else c.append(table([["Tool",r=>r.tool],["Last run",r=>when(r.last_run)],["Pages",r=>r.pages],["Claims",r=>r.claims],["Error",r=>r.error||"",r=>r.error?"d-deny":""]],s.tools));
   v.append(c)}catch(e){}}
 
-const panels={approvals:approvals,activity:activity,policy:policyPanel,context:contextPanel};
+function plansPanel(){const v=view();v.textContent="";
+ v.append(el("h2",{},"Plans for your edge"),el("p",{className:"mut"},"The free edge keeps working without a Descles account or license. Paid features are delivered as separate customer-hosted components with an offline signed subscription."));
+ const g=el("div",{className:"grid"});
+ function card(title,label,details){const c=el("div",{className:"card"});c.append(el("div",{className:"tool"},title),el("div",{className:"meta"},label),el("p",{},details));g.append(c)}
+ card("Free edge","Included in this installation","Model and MCP gateway, local policy and budgets, agent keys, approvals, activity and the local console. No license key needed.");
+ card("Team control","Paid · runs in your network","Shared agent identities, scoped grants, organization policy and signed bundles for multiple edges. The control plane is operated by your team.");
+ card("Organization context + learning","Paid extensions for premium edges","Permission-aware facts about people, customers and work, with optional learning from governed tool results. Enabled only by the relevant signed license features.");
+ v.append(g);
+ const steps=el("div",{className:"card"}),list=el("ol");steps.append(el("div",{className:"tool"},"How upgrading works"));
+ for(const line of ["Contact us to choose Team features or a design-partner pilot.","Receive private images and an offline signed subscription file.","Your admin runs the control plane and any premium edges in your network, then connects edges to its signed policy bundles."])list.append(el("li",{},line));
+ steps.append(list,el("a",{href:"mailto:outreach@descles.com?subject=Descles%20Team%20upgrade"},"Ask about Team pricing"));v.append(steps);
+ const pilot=el("div",{className:"card"});pilot.append(el("div",{className:"tool"},"Try Team as a design partner"),el("p",{},"We are inviting teams to a free, time-limited pilot of the paid features, with setup help and a chance to shape the product. You bring your own model provider account and infrastructure."));
+ const contact=el("a",{className:"cta",href:"mailto:outreach@descles.com?subject=Descles%20design%20partner%20pilot"},"Ask about the free pilot");pilot.append(contact);v.append(pilot);
+ v.append(el("p",{className:"mut"},"Upgrading is a deliberate install and license step; browsing this page never contacts Descles or changes your edge."))}
+
+const panels={approvals:approvals,activity:activity,policy:policyPanel,context:contextPanel,plans:plansPanel};
 async function show(id){for(const b of document.querySelectorAll("#tabs button"))b.setAttribute("aria-pressed",b.dataset.id===id?"true":"false");
  try{location.hash=id}catch(e){}
  try{await (panels[id]||(()=>{view().textContent="This panel is not available in this page version."}))()}catch(e){fail(e)}}

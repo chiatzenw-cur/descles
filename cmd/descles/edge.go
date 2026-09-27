@@ -79,9 +79,134 @@ func runEdgeInit(args []string) error {
 	return nil
 }
 
+// dockerEngineUp reports the engine version behind the current docker context, or
+// false if the engine is not reachable (Docker Desktop stopped, pipe not created yet).
+func dockerEngineUp() (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}").Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
+}
+
+// dockerDesktopExe finds the Docker Desktop launcher, if it is installed. Recent
+// Docker Desktop releases install per-user under
+// %LOCALAPPDATA%\Programs\DockerDesktop\frontend\, older ones under Program Files.
+func dockerDesktopExe() string {
+	if exe, err := exec.LookPath("Docker Desktop.exe"); err == nil {
+		return exe
+	}
+	local, pf, pf86 := os.Getenv("LOCALAPPDATA"), os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)")
+	candidates := []string{
+		filepath.Join(local, "Programs", "DockerDesktop", "frontend", "Docker Desktop.exe"),
+		filepath.Join(local, "Programs", "DockerDesktop", "Docker Desktop.exe"),
+		filepath.Join(local, "Programs", "Docker", "Docker", "Docker Desktop.exe"),
+		filepath.Join(local, "Docker", "Docker Desktop.exe"),
+		filepath.Join(pf, "Docker", "Docker", "Docker Desktop.exe"),
+		filepath.Join(pf86, "Docker", "Docker", "Docker Desktop.exe"),
+		"/Applications/Docker.app",
+	}
+	patterns := []string{
+		filepath.Join(local, "Programs", "DockerDesktop", "*", "Docker Desktop.exe"),
+		filepath.Join(local, "Programs", "DockerDesktop", "app", "*", "Docker Desktop.exe"),
+	}
+	for _, p := range patterns {
+		if p == "" {
+			continue
+		}
+		if m, _ := filepath.Glob(p); len(m) > 0 {
+			return m[0]
+		}
+	}
+	for _, p := range candidates {
+		if p == "" {
+			continue
+		}
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+// dockerDesktopLaunch returns the command that starts Docker Desktop, if it is
+// installed (macOS needs `open -a Docker`; the .app bundle is a directory).
+func dockerDesktopLaunch() (*exec.Cmd, bool) {
+	if exe := dockerDesktopExe(); exe != "" {
+		return exec.Command(exe), true
+	}
+	if st, err := os.Stat("/Applications/Docker.app"); err == nil && st.IsDir() {
+		return exec.Command("open", "-a", "Docker"), true
+	}
+	return nil, false
+}
+
+// dockerContextName returns the active docker context.
+func dockerContextName() string {
+	out, err := exec.Command("docker", "context", "show").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func dockerEndpoint() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "context", "inspect", "-f",
+		"{{.Endpoints.docker.Host}}").Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ensureDockerEngine removes the most common way `edge up` fails: Docker Desktop is
+// installed and the compose file is fine, but the engine (the named pipe the docker
+// CLI talks to) is not up yet - typically right after a reboot or a desktop restart.
+// Rather than surfacing a bare `docker compose up: exit status 1`, start Docker
+// Desktop, wait for the engine, and if it never appears, say what is actually wrong.
+func ensureDockerEngine(wait time.Duration) error {
+	if v, ok := dockerEngineUp(); ok {
+		_ = v
+		return nil
+	}
+	desktop, haveDesktop := dockerDesktopLaunch()
+	// An explicit DOCKER_HOST pointing somewhere is a configuration choice, not a
+	// startup race: never override it by launching Docker Desktop.
+	if haveDesktop && os.Getenv("DOCKER_HOST") == "" {
+		fmt.Printf("docker engine not reachable; starting Docker Desktop (waiting up to %s)\n", wait.Round(time.Second))
+		desktop.Stdout, desktop.Stderr = nil, nil
+		if err := desktop.Start(); err == nil {
+			_ = desktop.Process.Release() // the launcher stays resident; do not wait on it
+			deadline := time.Now().Add(wait)
+			for time.Now().Before(deadline) {
+				time.Sleep(2 * time.Second)
+				if v, ok := dockerEngineUp(); ok {
+					fmt.Printf("docker engine %s is up\n", v)
+					return nil
+				}
+			}
+		}
+	}
+	hint := "start Docker Desktop and re-run"
+	switch {
+	case os.Getenv("DOCKER_HOST") != "":
+		hint = fmt.Sprintf("DOCKER_HOST is set to %s; fix it or unset it and re-run", os.Getenv("DOCKER_HOST"))
+	case !haveDesktop:
+		hint = "install Docker Desktop, or point DOCKER_HOST at a reachable engine"
+	}
+	return fmt.Errorf("docker engine is not reachable\n"+
+		"  context:  %s\n  endpoint: %s\n  fix:      %s\n  check:    docker info",
+		dockerContextName(), dockerEndpoint(), hint)
+}
+
 func runEdgeUp(args []string) error {
 	fs := flag.NewFlagSet("edge up", flag.ContinueOnError)
 	dir := fs.String("dir", "descles-edge", "deployment directory from `descles edge init`")
+	wait := fs.Duration("wait", 90*time.Second, "how long to wait for the Docker engine to start")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -95,6 +220,9 @@ func runEdgeUp(args []string) error {
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("docker not found; deploy compose.yml with your own tooling")
+	}
+	if err := ensureDockerEngine(*wait); err != nil {
+		return err
 	}
 	cmd := exec.Command("docker", "compose", "-f", compose, "up", "-d")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -116,6 +244,10 @@ func runEdgeUp(args []string) error {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				fmt.Printf("edge healthy at http://127.0.0.1:%d\n", port)
+				if envRaw, readErr := os.ReadFile(filepath.Join(*dir, "edge.env")); readErr == nil && strings.Contains(string(envRaw), "DESCLES_EDGE_REPORT_URL=off") && strings.Contains(string(envRaw), "DESCLES_EDGE_BUNDLE_URL=") {
+					fmt.Printf("Team workspace: http://127.0.0.1:%d/ (customer control-plane token)\n", port)
+				}
+				fmt.Printf("local edge console: http://127.0.0.1:%d/admin/ (admin token: %s)\n", port, filepath.Join(*dir, "config", "secrets", "admin-token"))
 				fmt.Printf("connect an agent: descles connect claude-code --edge http://127.0.0.1:%d --key <agent key>\n", port)
 				return nil
 			}

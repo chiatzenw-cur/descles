@@ -1,217 +1,143 @@
 # Descles edge
 
-**Run your AI agents through a gateway you control, in your own network.**
+**One gateway for your agents' model calls, MCP tools, policy, approvals, and local audit.** Run it in your own network. Provider keys and MCP credentials stay on the edge; agents use revocable edge keys.
 
-![A real Claude Code session is asked to run rm -rf; the Descles edge denies it before it runs](docs/descles-demo.gif)
+![A Claude Code session has a destructive command denied by the edge](docs/descles-demo.gif)
 
-*Released binaries, a real Claude Code session and a real model. The denial on screen comes from the edge,
-not from the model.*
+Descles works with Claude Code, Codex CLI, Hermes Agent, and clients that speak an OpenAI-compatible API. The edge is source-available under [Elastic License 2.0](LICENSE). You can inspect and self-host the free edge without a Descles account or license key.
 
-**Measured:** agents answering from organization context used 69–76% fewer tokens than agents calling
-CRM, billing and support themselves, with the same answers and every boundary holding.
-[Method, results, limits and raw evidence](docs/benchmarks/ORG-CONTEXT-BENCHMARK.md).
+**New here?** Follow [the first-time setup](#first-time-setup) below. It runs on your own computer and gives you a browser console. You do not need to write code or create a Descles account. You do need a model provider API key; the provider may charge for model use.
 
-The Descles edge sits between your agents (Claude Code, Codex, Hermes, your own) and the models and tools
-they use. Provider keys and tool credentials stay on the edge, calls are checked against your policy, and
-decisions are recorded on the edge. Its source is available under ELv2 so you can inspect the code and outbound data contract:
-see [docs/DATA-FLOWS.md](docs/DATA-FLOWS.md).
+**Want to try the Team edition?** We are looking for design partners for a **free, time-limited pilot** of the paid, self-hosted control plane and organization-context features. We will help with setup and use your feedback to shape the product. You bring your own model provider account and machine or infrastructure. [Email us about a pilot](mailto:outreach@descles.com?subject=Descles%20design%20partner%20pilot). The standalone edge in this repository remains free to self-host without joining a pilot.
 
-```
-Claude Code ─┐                          ┌─▶ Anthropic / OpenAI / OpenAI-compatible models
-Codex ───────┼─▶   Descles edge   ──────┤
-Hermes ──────┤   keys · policy ·        └─▶ your MCP servers (GitHub, Stripe, internal)
-your agents ─┘   approvals · audit
-```
-
-## What each integration gets
-
-| | Claude Code | Hermes Agent | Codex CLI | Other OpenAI-compatible agents |
+| Capability | Claude Code | Codex CLI | Hermes Agent | API client |
 |---|---|---|---|---|
-| Model calls routed, budgeted, recorded | yes | yes | yes | yes |
-| MCP tools run by the edge with credentials only it holds | yes | yes | yes | yes |
-| Built-in shell/file tools checked **before** they run | yes, via hooks | yes, via hooks | no: Codex has no pre-execution hook | only if the agent calls `/v1/tool-check` |
-| `require_approval` on MCP tools | waits at `/admin/` | waits at `/admin/` | waits at `/admin/` | waits at `/admin/` |
+| Route model calls and record usage | Yes | Yes | Yes | Yes |
+| Use edge-hosted MCP connectors | Yes | Yes | Yes | If the client supports MCP |
+| Check built-in shell/file calls before execution | Via hooks | No pre-execution hook | Via hooks | Only if integrated with `/v1/tool-check` |
+| Human approval for edge MCP calls | At the edge console | At the edge console | At the edge console | At the edge console |
 
-Limits worth knowing:
+The edge enforces calls that actually pass through it. A model URL change alone does not intercept an agent's built-in tools. Codex has no pre-execution hook, so keep its sandbox enabled and route sensitive operations through edge MCP connectors. Shell pattern rules are guardrails, not a sandbox.
 
-- Shell rules match the command the model asks to run. They are guardrails, not a sandbox: an obfuscated
-  command can slip past a pattern. Keep the harness's own sandbox, and put anything that must never be
-  bypassed behind an MCP connector, whose credential the agent never holds.
-- An approval lets the edge forward **one attempt of the exact call** (same agent, tool and argument
-  digest, before it expires). It does not make the downstream operation idempotent.
-- Only the metadata fields listed in DATA-FLOWS are reported, and label values are limited to names the
-  edge knows. That is a field and value policy enforced by tests, not a proof against every side channel.
-  For zero reporting, run standalone.
-- Records on the edge hold decisions and metadata, not prompts or tool input. The exception is the
-  arguments of a call awaiting approval, which are kept on the edge so an approver can review them, and
-  erased when the approval closes.
+## First-time setup
 
-## Install
+This walkthrough runs one free edge on your computer. You need:
 
-```bash
-go install github.com/chiatzenw-cur/descles/cmd/descles@latest   # CLI: edge init/up, connect, doctor, approvals
+1. **Docker Desktop**, installed and running. Use Docker's instructions for [Windows](https://docs.docker.com/desktop/setup/install/windows-install/), [Mac](https://docs.docker.com/desktop/setup/install/mac-install/), or [Linux](https://docs.docker.com/desktop/setup/install/linux/). Wait until Docker says its engine is running.
+2. A **model provider API key**. For this walkthrough, create one in the [Claude Console](https://platform.claude.com/docs/en/manage-claude/authentication) under **Settings → API keys**. This is separate from a Claude chat subscription. Keep the key private; you will paste it into a file on your computer.
+3. The **Descles CLI** for your operating system from [Releases](https://github.com/chiatzenw-cur/descles/releases). Under the newest release's **Assets**, choose the file beginning `descles-` (the CLI, not `descles-edge-`) and ending in your OS and CPU type: `windows-amd64.exe` for most Windows PCs, `darwin-arm64` for Apple Silicon Macs, `darwin-amd64` for Intel Macs, or `linux-amd64` for most Linux PCs. Put it in a new folder named `Descles` in your Documents folder. Rename the downloaded file to `descles.exe` on Windows or `descles` on Mac/Linux.
+
+Open a terminal **in that Descles folder**. On Windows, open the folder in File Explorer, right-click empty space, and choose **Open in Terminal**. On Mac/Linux, open Terminal and change to the folder (for example, `cd ~/Documents/Descles`). The `.` at the start of the commands below means “run the file in this folder.” Paste commands one at a time.
+
+**Windows PowerShell:**
+
+```powershell
+.\descles.exe edge init --yes --dir my-edge --providers anthropic
 ```
 
-The edge runs as a container (`ghcr.io/chiatzenw-cur/descles-edge`, pin it by digest) or as the `edge`
-binary. Signed binaries are on [Releases](https://github.com/chiatzenw-cur/descles/releases). To check that a
-release is what this source builds, see [docs/VERIFY-RELEASE.md](docs/VERIFY-RELEASE.md).
-
-Use the generated Compose file to run the edge on a host you control.
-
-No server of your own? [deploy/aws](deploy/aws/README.md) runs the edge in your AWS account from one
-CloudFormation stack, on your domain or on a CloudFront address with no domain needed.
-
-## 1. Standalone edge (no Descles account)
-
-Standalone mode sends no reports to Descles. Requests still reach the model providers and tool servers
-you configure. Agent keys are stored as hashes in a file, and policy is a YAML file.
+**Mac or Linux:**
 
 ```bash
-descles edge init --yes --dir my-edge --providers anthropic   # prints an agent key once; writes config,
-                                                              # policy, compose file and an admin token
-echo "$ANTHROPIC_API_KEY" > my-edge/config/secrets/anthropic-key
-descles edge up --dir my-edge                                 # docker compose up + health check
+chmod +x ./descles
+./descles edge init --yes --dir my-edge --providers anthropic
 ```
 
-Then connect an agent and check it:
+The command creates a `my-edge` folder and prints an **agent key once**. Copy that key somewhere private. It also creates an admin token in `my-edge/config/secrets/admin-token`.
+
+Now open `my-edge/config/secrets/anthropic-key` in a **plain-text editor**. Paste your Claude API key as the file's only content and save it. Do not add quotes or a `.txt` extension. The file stays on your computer and is mounted into the edge container; never paste the key into an issue or chat.
+
+Start the edge in the same terminal:
+
+```powershell
+# Windows
+.\descles.exe edge up --dir my-edge
+```
 
 ```bash
-descles connect claude-code --edge http://127.0.0.1:8081 --key <agent key>
-descles doctor --edge http://127.0.0.1:8081 --admin-token-file my-edge/config/secrets/admin-token
+# Mac or Linux
+./descles edge up --dir my-edge
 ```
 
-- **Policy**: `my-edge/config/policy.yaml`. The generated file already denies `rm -rf`, `push --force`,
-  `kubectl delete` and reading `.env` files, and marks `stripe.create_refund` as `require_approval`.
-- **MCP connectors**: `my-edge/config/edge-mcp.yaml` (or `descles edge init --connector github=https://...`).
-- **Approvals**: open `http://127.0.0.1:8081/admin/` with the token in `my-edge/config/secrets/admin-token`,
-  or use `descles approvals list | approve <id> | deny <id> --edge ... --admin-token-file ...`.
-  To notify approvers, set `DESCLES_EDGE_APPROVAL_WEBHOOK_FILE` in `my-edge/.env` (arguments are not sent).
+When you see `edge healthy`, open **[http://127.0.0.1:8081/admin/](http://127.0.0.1:8081/admin/)** in a browser on that computer. Paste the **admin token** from `my-edge/config/secrets/admin-token` when asked. You should see **Activity, Policy, Approvals, and Plans**. Activity is empty until an agent sends a call. The Plans tab explains which features require the paid, customer-hosted package and links to the free design-partner pilot. The edge root (`http://127.0.0.1:8081/`) also opens this console in current builds.
 
-## 2. Team: your own control plane, one edge for everyone
+| Secret | Where it comes from | What it is for |
+|---|---|---|
+| Provider API key | Claude Console | Lets the edge call the model provider; only the edge stores it |
+| Agent key | Printed once by `edge init` | Lets your agent call the edge; use it with `descles connect` |
+| Admin token | `my-edge/config/secrets/admin-token` | Opens the local console and approves calls; do not give it to agents |
 
-For a team, the organization runs one edge and one Team control plane, both in its own network. The
-control plane manages agent identities and policy and signs a short-lived bundle that the edge pulls;
-the edge keeps provider keys, tool credentials and records, and reports nothing to Descles. The Team
-control plane and the organization-context edge are paid, delivered as images that verify an offline
-signed subscription file. This public edge works without one. [Contact us](mailto:outreach@descles.com).
+To use OpenAI instead of Claude, run `edge init` with `--providers openai`, create an [OpenAI API key](https://platform.openai.com/docs/quickstart/make-your-first-api-request), and put it in `my-edge/config/secrets/openai-key`. For another OpenAI-compatible provider, also pass its HTTPS URL with `--openai-base`. To build the CLI from source instead of downloading it, install Go 1.27+ and run `go install github.com/chiatzenw-cur/descles/cmd/descles@latest`.
 
-### For org admins
+This local setup publishes port `8081` only to your own computer. Standalone mode sends **no reports to Descles**. Model requests still go to the provider you configure. The edge records decisions and usage, not prompts or model responses; pending approval arguments are stored locally until the approval closes. See [data flows](docs/DATA-FLOWS.md). For a shared production deployment, use your own TLS ingress and access controls, and pin the container image by digest.
 
-1. **Run the control plane** behind your internal TLS ingress (below: `https://control.internal`), with
-   the delivered `compose.control.yml`, an admin token, a master key and the license file. Then:
+## Connect an agent
 
-   ```bash
-   C=https://control.internal; H="Authorization: Bearer $ADMIN_TOKEN"
-   curl -H "$H" -d '{"name":"Acme","slug":"acme"}' $C/control/orgs                    # → "id": $ORG
-   curl -H "$H" -d '{"scopes":["edge.sync"]}' $C/control/orgs/$ORG/keys               # edge sync token, shown once
-   curl $C/edge/bundle-key                                                            # check it over a trusted channel
-   ```
+First install the agent you want to use. Return to the terminal in your `Descles` folder and use the **agent key** printed by `edge init`, not the Claude API key or console admin token. Replace `PASTE_AGENT_KEY_HERE` with your saved agent key. Choose **one** of these commands:
 
-2. **Deploy the edge** and point it at the control plane:
+```powershell
+# Windows: choose one line
+.\descles.exe connect claude-code --edge http://127.0.0.1:8081 --key "PASTE_AGENT_KEY_HERE"
+.\descles.exe connect codex       --edge http://127.0.0.1:8081 --key "PASTE_AGENT_KEY_HERE"
+.\descles.exe connect hermes      --edge http://127.0.0.1:8081 --key "PASTE_AGENT_KEY_HERE"
+.\descles.exe connect openai      --edge http://127.0.0.1:8081 --key "PASTE_AGENT_KEY_HERE"
+```
 
-   ```bash
-   descles edge init --yes --dir acme-edge --mode selfhost --providers anthropic      --control-plane https://control.internal --org $ORG --bundle-key <public_key>
-   echo "<sync token>"       > acme-edge/config/secrets/report-token   # legacy name; nothing is reported
-   echo "$ANTHROPIC_API_KEY" > acme-edge/config/secrets/anthropic-key
-   descles edge up --dir acme-edge
-   ```
+On Mac/Linux, use the same line with `./descles` in place of `.\descles.exe`. `claude-code` writes model, hook, and MCP settings. `codex` writes a model-provider profile and MCP settings; it cannot add a shell pre-execution hook. `hermes` and `openai` print settings for you to copy into those clients. After connecting, make a model or tool call in your agent and refresh the console's **Activity** tab. For exact client settings and limitations, see [Connect agents](docs/CONNECT-AGENTS.md).
 
-   Put your TLS ingress in front of it (below: `https://descles.internal`). That is the URL your members
-   connect to. The edge refuses any bundle not signed by the key you pinned.
-
-3. **Set the policy.** Same YAML as the standalone `policy.yaml`, signed into every bundle:
-
-   ```bash
-   jq -Rs '{raw: .}' policy.yaml | curl -H "$H" --data-binary @- $C/control/policy
-   ```
-
-   The edge's own `acme-edge/config/policy.yaml` still applies, as a floor: every decision is the
-   stricter of the two and every budget the lower cap. The control plane can tighten what your edge
-   enforces but never loosen it, so a rule you must keep belongs in that local file.
-
-4. **Give each member's agent an identity and a key** (shown once), and hand the key over:
-
-   ```bash
-   curl -H "$H" -d '{"name":"dev-laptop-claude","kind":"agent"}' $C/control/orgs/$ORG/agents   # → "id"
-   curl -H "$H" -d '{}' $C/control/agents/<id>/keys                                          # → "key"
-   ```
-
-5. **Operate.** `curl -H "$H" -X POST $C/control/agents/<id>/revoke` disables an agent and expires its
-   keys; edges drop it at the next bundle refresh. An edge that cannot reach the control
-   plane keeps its last bundle until the lease ends (10 minutes by default), then stops accepting calls.
-   Approvals are decided on the edge at `https://descles.internal/admin/` (admin token in
-   `acme-edge/config/secrets/admin-token`); arguments are shown only there. If the subscription lapses,
-   running agents keep working and revocations, approvals and bundle refreshes continue; only new
-   management changes pause until a renewed license file is installed.
-
-### For members
-
-Nobody installs an edge of their own: the organization runs one, and you change an endpoint.
-
-**Endpoint only, nothing to install.** Set the base URL and your agent key, and point MCP clients at
-the edge:
+Any API client can also use the edge directly. Send the agent key as a bearer token. These are optional checks; replace the placeholder with your saved agent key:
 
 ```bash
-export ANTHROPIC_BASE_URL=https://descles.internal/anthropic   # or OPENAI_BASE_URL=https://descles.internal/v1
-export ANTHROPIC_AUTH_TOKEN=<key>
-# MCP: https://descles.internal/mcp/<connector>, header Authorization: Bearer <key>
+# Mac or Linux
+curl -H "Authorization: Bearer PASTE_AGENT_KEY_HERE" http://127.0.0.1:8081/v1/models
 ```
 
-**With the `descles` CLI** (a single binary, not a service), shell and file actions are also checked
-before they run in Claude Code and Hermes, and the settings are written for you:
-
-```bash
-descles connect claude-code --edge https://descles.internal --key <key>   # settings, hooks, MCP
-descles connect codex       --edge https://descles.internal --key <key>   # model provider, MCP
-descles connect hermes      --edge https://descles.internal --key <key>   # prints settings to paste
-descles doctor --edge https://descles.internal
+```powershell
+# Windows PowerShell
+curl.exe -H "Authorization: Bearer PASTE_AGENT_KEY_HERE" http://127.0.0.1:8081/v1/models
 ```
 
-`doctor` checks that the edge is reachable, that your key works, that hooks are installed, and that no
-`ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in your shell points around the edge.
+Set an OpenAI-compatible client's base URL to `http://127.0.0.1:8081/v1`, or an Anthropic client's base URL to `http://127.0.0.1:8081/anthropic`. The edge serves `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/anthropic/v1/messages`. Choose a model your configured provider serves, or set a model alias on the edge. A client that executes its own tools must call `/v1/tool-check` before execution and `/v1/tool-report` afterward if it wants those actions governed and recorded.
 
-A denied tool shows `Descles: denied` with the reason. A call that needs approval returns an approval
-id; after someone approves it, repeat the same call. Per-harness details: [docs/CONNECT-AGENTS.md](docs/CONNECT-AGENTS.md).
+## Policy, tools, and approvals
 
-## Edge endpoints
+Edit `my-edge/config/policy.yaml` to set budgets, deny tools, or require a human approval. The generated policy includes examples for destructive shell commands and sensitive files. The console's Policy panel shows the effective rules and lets you check a proposed call. Restart the edge after changing local config files.
 
-| Endpoint | For |
+Define MCP connectors in `my-edge/config/edge-mcp.yaml`. Their credentials live in local secret files; agents call `POST /mcp/<connector>` with an edge key and never receive the connector credential. `GET /mcp` lists connectors available to that key. The edge applies policy to each mediated call.
+
+When policy requires approval, open the **Approvals** tab at `/admin/`, or use `descles approvals list`, `approve`, and `deny` with the edge admin token. An approval covers one attempt with the same agent, tool, and argument digest before it expires. The edge checks current grants and policy again when the agent retries. The console and its admin API are local to the edge; do not expose them publicly without your own access controls.
+
+## Free edge, paid Team, and design partners
+
+| Option | What you get | Cost from Descles |
+|---|---|---|
+| **Free edge** | One self-hosted gateway, local console, policy, approvals, and local records | Free; no Descles account or license key |
+| **Team** | Customer-hosted control plane for shared identities, grants and policy, plus optional organization context and learning on premium edges | Paid subscription with an offline signed license |
+| **Design-partner pilot** | Hands-on help trying Team and shaping its workflow in your own environment | No Descles software fee during an agreed pilot period |
+
+The paid control plane and premium edge run in **your** network. The edge fetches signed policy bundles from your control plane without reporting to Descles. You keep your provider keys, tool credentials and execution records. The pilot does not cover charges from model providers or your own infrastructure. We are especially interested in teams running more than one agent or needing shared approvals, scoped access, or organizational context. [Tell us what you are building](mailto:outreach@descles.com?subject=Descles%20design%20partner%20pilot). See [self-hosted mode in the CLI guide](docs/CONNECT-AGENTS.md) for the technical path.
+
+In Team self-hosted mode, the **full workspace** is served by your edge at `http://127.0.0.1:8081/`, using a customer control-plane admin or organization token to sign in. Management stays on your control plane; usage and traces come from that edge. The smaller `/admin/` console remains available for local policy and approvals with its separate edge admin token. The free standalone edge opens `/admin/` when you visit `/` because it has no Team control plane.
+
+The Team workspace includes pages for source sync, unified context, trace mining and reviewed workflows. Context and sync inspect the premium edge using its local admin token; they need the `org_context` add-on. Mining prepares a command from local tool traces, while review and deterministic execution run through the customer-side `descles-loop` CLI. The browser does not silently execute a draft workflow.
+
+## If something does not work
+
+| What you see | What to try |
 |---|---|
-| `/v1/chat/completions`, `/v1/responses`, `/v1/models` | OpenAI-compatible agents (`OPENAI_BASE_URL=<edge>/v1`) |
-| `/anthropic/v1/messages` | Anthropic-compatible agents (`ANTHROPIC_BASE_URL=<edge>/anthropic`) |
-| `POST /mcp/<connector>`, `GET /mcp` | MCP clients. `GET /mcp` lists the connectors your key may use |
-| `POST /v1/tool-check`, `POST /v1/tool-report` | Harness hooks, before and after a built-in tool runs |
-| `/admin/`, `/admin/approvals`, `/admin/traces/{id}`, `/admin/info` | Approvers and operators (edge admin token) |
-| `/healthz` | Load balancers |
+| `docker not found` or `docker engine is not reachable` | Start Docker Desktop, wait for its engine to finish starting, then run `edge up` again. |
+| “Empty secret” or provider authentication failure | Check that `my-edge/config/secrets/anthropic-key` contains your **provider API key** as plain text, with no quotes or `.txt` extension. |
+| The browser cannot open the console | Wait for `edge healthy`, then visit `http://127.0.0.1:8081/admin/` on the same computer. A manually started edge also needs an admin token configured. |
+| “Wrong admin token” | Use the file `my-edge/config/secrets/admin-token`, not the agent or provider key. |
+| Activity is empty | That is normal until you connect an agent and make a call through the edge. |
 
-Agents authenticate with their key (`Authorization: Bearer <key>`).
-The optional headers `X-Descles-Trace` and `X-Descles-Playbook-Version` group records by task and by
-configuration (`descles connect claude-code --playbook-version team@1` sets the second).
+If you need more detail, open the generated `my-edge/README.md`, run `descles doctor` with your local CLI path, or [contact us](mailto:outreach@descles.com?subject=Descles%20setup%20help).
 
-## Layout
+## Reference
 
-| Path | What |
-|---|---|
-| `cmd/edge` | The edge server |
-| `cmd/descles` | CLI: `edge init`/`up`, `connect`, `doctor`, `approvals`, harness hooks |
-| `pkg/edgeapp` | Edge wiring and startup |
-| `pkg/proxy`, `pkg/provider`, `pkg/translate` | Model gateway |
-| `pkg/edge` | Keys, signed bundles, grants, MCP gateway, tool-check, approvals, outbound metadata |
-| `pkg/policy` | Policy engine |
-| `pkg/trajectory` | Open trace format |
+- [Connect Claude Code, Codex, Hermes, and other clients](docs/CONNECT-AGENTS.md)
+- [Data flows and outbound boundaries](docs/DATA-FLOWS.md)
+- [Verify a release](docs/VERIFY-RELEASE.md)
+- [Customer-operated AWS edge template](deploy/aws/README.md) (optional; runs in your account)
+- [Security reporting](SECURITY.md)
 
-The paid Descles offering builds on this edge through `pkg/edge/extension.go` and the
-signed-bundle protocol. Its source is maintained in a separate private repository.
-The premium edge and Team control plane both run in the customer's network. The public
-edge is independently buildable and does not require a paid license.
-
-## Security
-
-Report vulnerabilities privately; see [SECURITY.md](SECURITY.md) (outreach@descles.com).
-
-## License
-
-[Elastic License 2.0](LICENSE). You may use, modify and self-host this edge, including in production and
-inside commercial products. You may not offer it to third parties as a hosted or managed service.
-
-Copyright 2026 the Descles authors.
+This repository contains the free edge and CLI, not the paid control plane or license issuer. Under [ELv2](LICENSE), you may use, modify, and self-host the edge, including commercially; you may not offer it to third parties as a hosted or managed service.

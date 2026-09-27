@@ -196,5 +196,6 @@ func (a *ApprovalAdmin) panels(w http.ResponseWriter, _ *http.Request) {
 		id, title := p.AdminPanel()
 		out = append(out, panel{id, title})
 	}
+	out = append(out, panel{"plans", "Plans"})
 	writeJSONBody(w, map[string]any{"panels": out})
 }

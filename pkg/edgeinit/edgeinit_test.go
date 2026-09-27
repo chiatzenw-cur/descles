@@ -107,6 +107,15 @@ func TestGeneratedStandaloneEdgeBootsAndEnforces(t *testing.T) {
 			t.Fatal("edge did not become healthy")
 		}
 	}
+	console, err := http.Get(base + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consoleBody, _ := io.ReadAll(console.Body)
+	console.Body.Close()
+	if console.StatusCode != http.StatusOK || console.Request.URL.Path != "/admin/" || !strings.Contains(string(consoleBody), "Descles edge console") {
+		t.Fatalf("edge root should open local console: status=%d path=%s", console.StatusCode, console.Request.URL.Path)
+	}
 	call := func(method, path, body string) (int, string) {
 		req, _ := http.NewRequest(method, base+path, bytes.NewBufferString(body))
 		req.Header.Set("Authorization", "Bearer "+res.AgentKey)

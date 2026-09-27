@@ -24,7 +24,7 @@
     tokens:'M12 3 3 8v8l9 5 9-5V8z M3 8l9 5 9-5',
     status:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M8 12h8'
   };
-  const aliases={guide:'overview',operations:'approvals',policy:'policies',employees:'agents',traces:'runs',auditability:'coverage'};
+  const aliases={guide:'overview',operations:'approvals',policy:'policies',employees:'agents',traces:'runs',auditability:'coverage',integrations:'connect',context:'agents',mining:'runs',workflows:'skills'};
   function makeIcon(name){
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
     svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('class','icon');svg.setAttribute('aria-hidden','true');

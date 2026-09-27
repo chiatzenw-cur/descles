@@ -84,6 +84,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	var holder *policy.Holder
 	var keys *edge.Keyring
 	var bundle *edge.BundleState
+	var workspaceOrigin *url.URL
 	bundleURL := strings.TrimSpace(os.Getenv("DESCLES_EDGE_BUNDLE_URL"))
 	if bundleURL != "" {
 		bundleEndpoint, parseErr := url.Parse(bundleURL)
@@ -92,6 +93,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		}
 		if !noReport && (bundleEndpoint.Scheme != parsed.Scheme || bundleEndpoint.Host != parsed.Host) {
 			return fmt.Errorf("DESCLES_EDGE_BUNDLE_URL must share the report URL origin when reporting is enabled")
+		}
+		if noReport {
+			workspaceOrigin = &url.URL{Scheme: bundleEndpoint.Scheme, Host: bundleEndpoint.Host}
 		}
 		if reportToken == "" {
 			return fmt.Errorf("signed bundle mode requires DESCLES_EDGE_REPORT_TOKEN as an edge sync token")
@@ -298,6 +302,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	// Approvers keep working even when the policy lease has lapsed: deciding
 	// is not executing, and every approved call is re-checked when it runs.
 	admin.Register(mux)
+	if workspaceOrigin != nil {
+		registerCustomerWorkspace(mux, inner, workspaceOrigin, orgID)
+	} else if admin != nil {
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+		})
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if !metered.Ready() || (bundle != nil && !bundle.Valid()) {
 			http.Error(w, "local metering unavailable", http.StatusServiceUnavailable)
