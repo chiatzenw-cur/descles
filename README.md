@@ -56,7 +56,7 @@ Start the edge in the same terminal. You can leave the generated provider key pl
 ./descles edge up --dir my-edge
 ```
 
-When you see `edge healthy`, open **[http://127.0.0.1:8081/admin/](http://127.0.0.1:8081/admin/)** in a browser on that computer. Paste the **admin token** from `my-edge/config/secrets/admin-token` when asked. Open **Providers**, enter `anthropic` as the name, `https://api.anthropic.com` as the base URL, `claude-*` as the model pattern, and paste your Claude API key. The key is encrypted in the edge's local data volume using the admin token; it is not returned by list pages. You can also use the original `my-edge/config/secrets/anthropic-key` file instead. See the [console guide](docs/EDGE-CONSOLE.md) for teams, agent keys, policy, traces and storage.
+When you see `edge healthy`, open **[http://127.0.0.1:8081/admin/](http://127.0.0.1:8081/admin/)** in a browser on that computer. Paste the **owner admin token** from `my-edge/config/secrets/admin-token` when asked. In **Users & access**, create a personal token for each person using the console; use the owner token only for setup and recovery. Open **Providers**, enter `anthropic` as the name, `https://api.anthropic.com` as the base URL, `claude-*` as the model pattern, and paste your Claude API key. The key is encrypted in the edge's local data volume using the owner token; it is not returned by list pages. You can also use the original `my-edge/config/secrets/anthropic-key` file instead. See the [console guide](docs/EDGE-CONSOLE.md) for users, teams, agent keys, policy, traces and storage.
 
 | Secret | Where it comes from | What it is for |
 |---|---|---|

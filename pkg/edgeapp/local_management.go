@@ -45,6 +45,7 @@ type localTeam struct {
 }
 type localEvent struct {
 	At     time.Time `json:"at"`
+	Actor  string    `json:"actor,omitempty"`
 	Action string    `json:"action"`
 	Target string    `json:"target"`
 }
@@ -176,8 +177,12 @@ func (m *localManagement) unseal(value string) (string, error) {
 	return string(plain), nil
 }
 
-func (m *localManagement) changed(next *localState, action, target string) error {
-	next.Events = append(append([]localEvent(nil), m.state.Events...), localEvent{At: time.Now().UTC(), Action: action, Target: target})
+func (m *localManagement) changed(next *localState, action, target string, r *http.Request) error {
+	actor := "owner"
+	if id, ok := edge.AdminFromContext(r.Context()); ok {
+		actor = id.ID
+	}
+	next.Events = append(append([]localEvent(nil), m.state.Events...), localEvent{At: time.Now().UTC(), Actor: actor, Action: action, Target: target})
 	if len(next.Events) > 1000 {
 		next.Events = next.Events[len(next.Events)-1000:]
 	}
@@ -248,7 +253,7 @@ func (m *localManagement) savePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	m.policy.Set(p)
 	next := m.state
-	_ = m.changed(&next, "policy.update", "local")
+	_ = m.changed(&next, "policy.update", "local", r)
 	localJSON(w, map[string]any{"saved": true})
 }
 
@@ -337,7 +342,7 @@ func (m *localManagement) addProvider(w http.ResponseWriter, r *http.Request) {
 	} else {
 		next.Providers = append(next.Providers, in)
 	}
-	if err := m.changed(&next, action, in.Name); err != nil {
+	if err := m.changed(&next, action, in.Name, r); err != nil {
 		localError(w, 500, err)
 		return
 	}
@@ -359,7 +364,7 @@ func (m *localManagement) deleteProvider(w http.ResponseWriter, r *http.Request)
 		localError(w, 404, fmt.Errorf("console-managed provider not found"))
 		return
 	}
-	if err := m.changed(&next, "provider.remove", id); err != nil {
+	if err := m.changed(&next, "provider.remove", id, r); err != nil {
 		localError(w, 500, err)
 		return
 	}
@@ -393,7 +398,7 @@ func (m *localManagement) addTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	next := m.state
 	next.Teams = append(append([]localTeam(nil), next.Teams...), in)
-	if err := m.changed(&next, "team.add", in.ID); err != nil {
+	if err := m.changed(&next, "team.add", in.ID, r); err != nil {
 		localError(w, 500, err)
 		return
 	}
@@ -420,7 +425,7 @@ func (m *localManagement) deleteTeam(w http.ResponseWriter, r *http.Request) {
 		localError(w, 404, fmt.Errorf("team not found"))
 		return
 	}
-	if err := m.changed(&next, "team.remove", id); err != nil {
+	if err := m.changed(&next, "team.remove", id, r); err != nil {
 		localError(w, 500, err)
 		return
 	}
@@ -458,7 +463,7 @@ func (m *localManagement) issueAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := m.state
-	_ = m.changed(&next, "agent.add", in.ID)
+	_ = m.changed(&next, "agent.add", in.ID, r)
 	localJSON(w, map[string]any{"id": in.ID, "key": key})
 }
 func (m *localManagement) rotateAgent(w http.ResponseWriter, r *http.Request) {
@@ -473,7 +478,7 @@ func (m *localManagement) rotateAgent(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			next := m.state
-			_ = m.changed(&next, "agent.rotate", id)
+			_ = m.changed(&next, "agent.rotate", id, r)
 			localJSON(w, map[string]any{"id": id, "key": key})
 			return
 		}
@@ -489,7 +494,7 @@ func (m *localManagement) deleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := m.state
-	_ = m.changed(&next, "agent.remove", id)
+	_ = m.changed(&next, "agent.remove", id, r)
 	localJSON(w, map[string]any{"removed": id})
 }
 func (m *localManagement) hasTeam(id string) bool {

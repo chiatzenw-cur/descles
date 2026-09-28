@@ -20,12 +20,12 @@ import (
 // small page at /admin/. Details of pending calls are shown from the edge's
 // own store and never pass through Descles.
 //
-// Authentication is one edge admin token (DESCLES_EDGE_ADMIN_TOKEN). The
-// approver's name is recorded as given; per-person identity (SSO) comes from
-// a managed control plane, not from this token.
+// The bootstrap token is an owner recovery credential. Named console tokens
+// identify individual administrators and viewers on this customer edge.
 type ApprovalAdmin struct {
-	Store *ApprovalStore
-	Token string
+	Store  *ApprovalStore
+	Token  string
+	Access *AdminAccess
 	// Traces serves GET /admin/traces/{id}: the edge's local record of one
 	// trace, for evaluations run by the edge's operator. Optional.
 	Traces interface {
@@ -55,6 +55,12 @@ func (a *ApprovalAdmin) Register(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /admin/{$}", a.page)
+	mux.Handle("GET /admin/me", a.auth(http.HandlerFunc(a.me)))
+	mux.Handle("GET /admin/operators", a.auth(http.HandlerFunc(a.operators)))
+	if a.Access != nil {
+		mux.Handle("POST /admin/operators", a.auth(http.HandlerFunc(a.issueOperator)))
+		mux.Handle("DELETE /admin/operators/{id}", a.auth(http.HandlerFunc(a.revokeOperator)))
+	}
 	mux.Handle("GET /admin/approvals", a.auth(http.HandlerFunc(a.list)))
 	mux.Handle("POST /admin/approvals/{id}/{decision}", a.auth(http.HandlerFunc(a.decide)))
 	if a.Traces != nil {
@@ -84,11 +90,31 @@ func (a *ApprovalAdmin) Register(mux *http.ServeMux) {
 
 func (a *ApprovalAdmin) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(a.Token)) != 1 {
+		header := r.Header.Get("Authorization")
+		if !strings.HasPrefix(header, "Bearer ") {
 			http.Error(w, "edge admin token required", http.StatusUnauthorized)
 			return
 		}
+		got := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+		id := AdminIdentity{}
+		if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(a.Token)) == 1 {
+			id = AdminIdentity{ID: "owner", Name: "Bootstrap owner token", Role: "owner", Shared: true}
+		} else if a.Access != nil {
+			var ok bool
+			id, ok = a.Access.Resolve(got)
+			if !ok {
+				http.Error(w, "edge admin token required", http.StatusUnauthorized)
+				return
+			}
+		} else {
+			http.Error(w, "edge admin token required", http.StatusUnauthorized)
+			return
+		}
+		if id.Role == "viewer" && r.Method != http.MethodGet && r.Method != http.MethodHead && !(r.Method == http.MethodPost && r.URL.Path == "/admin/policy/check") {
+			http.Error(w, "viewer access is read-only", http.StatusForbidden)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), adminIdentityKey{}, id))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -127,9 +153,12 @@ func (a *ApprovalAdmin) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.By, in.Reason = strings.TrimSpace(in.By), strings.TrimSpace(in.Reason)
-	if in.By == "" || len(in.By) > 120 || len(in.Reason) > 1000 {
-		http.Error(w, "\"by\" (1-120 chars) required; reason up to 1000 chars", http.StatusBadRequest)
+	if len(in.Reason) > 1000 {
+		http.Error(w, "reason up to 1000 chars", http.StatusBadRequest)
 		return
+	}
+	if id, ok := AdminFromContext(r.Context()); ok {
+		in.By = id.ID
 	}
 	out, err := a.Store.Decide(r.Context(), r.PathValue("id"), decision == "approve", in.By, in.Reason)
 	switch {

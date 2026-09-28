@@ -114,11 +114,10 @@ func TestEdgeApprovalLifecycle(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"amount":100`) || !strings.Contains(rec.Body.String(), id) {
 		t.Fatalf("pending list: %s", rec.Body.String())
 	}
-	if rec := r.admin("POST", "/admin/approvals/"+id+"/approve", "admin-secret", `{"by":""}`); rec.Code != http.StatusBadRequest {
-		t.Fatal("an approval must name the approver")
-	}
 	if rec := r.admin("POST", "/admin/approvals/"+id+"/approve", "admin-secret", `{"by":"alice","reason":"customer ticket 42"}`); rec.Code != http.StatusOK {
 		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	} else if !strings.Contains(rec.Body.String(), `"decided_by":"owner"`) {
+		t.Fatalf("approval must record the authenticated operator, not the supplied name: %s", rec.Body.String())
 	}
 	if rec := r.admin("POST", "/admin/approvals/"+id+"/deny", "admin-secret", `{"by":"mallory"}`); rec.Code != http.StatusConflict {
 		t.Fatal("a decided approval cannot be decided again")
@@ -138,7 +137,7 @@ func TestEdgeApprovalLifecycle(t *testing.T) {
 		t.Fatalf("execution record: %+v", last.Attributes)
 	}
 	used, _ := r.store.Get(context.Background(), id)
-	if used.State != ApprovalUsed || used.Args != nil || used.ArgsDigest == "" || used.DecidedBy != "alice" {
+	if used.State != ApprovalUsed || used.Args != nil || used.ArgsDigest == "" || used.DecidedBy != "owner" {
 		t.Fatalf("used approval must keep the digest and approver but erase the arguments: %+v", used)
 	}
 

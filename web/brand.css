@@ -3,9 +3,7 @@
 body{background:var(--paper);color:var(--ink)}
 aside{background:#f1f2e9;color:var(--ink);border-right:1px solid var(--line)}
 .brand{color:var(--ink);font-weight:650}.brand-caption,.brand span.brand-caption{color:var(--muted)}
-.brand-mark{width:30px;height:32px;display:inline-flex;align-items:center;position:relative;vertical-align:middle;margin-right:9px}
-.brand-mark:before{content:"";width:22px;height:27px;border:5px solid var(--orange);border-left-width:6px;border-radius:1px 17px 17px 1px;box-sizing:border-box}
-.brand-mark:after{content:"";position:absolute;left:2px;top:14px;width:23px;height:5px;background:var(--orange)}
+.brand-mark{width:32px;height:32px;display:inline-flex;align-items:center;flex:none;position:relative;vertical-align:middle;margin-right:9px;background:url('/icon.svg') center/contain no-repeat}
 .brand .brand-mark{display:inline-flex;margin:0 9px 0 0}
 .nav-label,.aside-bottom,.aside-bottom small,.sidebar-foot,.sidebar-foot small{color:var(--muted)}
 nav a,.nav-item{color:#69725f}nav a.active,.nav-item{background:#e6eadc;color:#4d6245}nav a:hover{background:#e6eadc}

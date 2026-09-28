@@ -46,7 +46,7 @@ func registerCustomerWorkspace(mux *http.ServeMux, localAPI http.Handler, contro
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		assets.ServeHTTP(w, r)
 	})
-	for _, path := range []string{"/app.js", "/edge_features.js", "/style.css", "/brand.css", "/icons.js"} {
+	for _, path := range []string{"/app.js", "/edge_features.js", "/style.css", "/brand.css", "/icons.js", "/icon.svg"} {
 		mux.Handle("GET "+path, serveAsset)
 	}
 

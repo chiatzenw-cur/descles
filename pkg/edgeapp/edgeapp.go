@@ -266,6 +266,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	}
 	defer closeApprovals()
 	if admin != nil {
+		admin.Access, err = edge.OpenAdminAccess(filepath.Join(filepath.Dir(cfg.SQLitePath), "console-users.json"))
+		if err != nil {
+			closeMCP()
+			return err
+		}
 		if keys != nil {
 			localManagement, err = openLocalManagement(filepath.Dir(cfg.SQLitePath), keys, registry, keyedProviders, admin.Token, holder, cfg.PolicyFile)
 			if err != nil {
@@ -318,7 +323,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		registerCustomerWorkspace(mux, inner, workspaceOrigin, orgID)
 	} else if admin != nil {
 		assets := web.Handler()
-		for _, path := range []string{"/style.css", "/brand.css", "/icons.js", "/edge_admin.css", "/edge_admin.js"} {
+		for _, path := range []string{"/style.css", "/brand.css", "/icons.js", "/icon.svg", "/edge_admin.css", "/edge_admin.js"} {
 			mux.Handle("GET "+path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Cache-Control", "no-store")
 				assets.ServeHTTP(w, r)
