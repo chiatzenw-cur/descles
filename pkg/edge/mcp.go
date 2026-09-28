@@ -146,6 +146,9 @@ func (g *MCPGateway) connector(id string) (MCPConnector, bool) {
 
 func (g *MCPGateway) extension(id string) Extension {
 	for _, e := range g.Extensions {
+		if adminOnly, ok := e.(interface{ AdminOnly() bool }); ok && adminOnly.AdminOnly() {
+			continue
+		}
 		if e.ID() == id {
 			return e
 		}

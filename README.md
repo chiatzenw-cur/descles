@@ -116,7 +116,7 @@ The paid control plane and premium edge run in **your** network. The edge fetche
 
 In Team self-hosted mode, the **full workspace** is served by your edge at `http://127.0.0.1:8081/`, using a customer control-plane admin or organization token to sign in. Management stays on your control plane; usage and traces come from that edge. `/admin/` remains available for local traces, policy inspection and approvals with its separate edge admin token. In free standalone mode, `/admin/` includes provider credentials, teams, agent keys, policy editing and audit/activity views; visiting `/` opens it.
 
-The Team workspace includes pages for source sync, unified context, trace mining and reviewed workflows. Context and sync inspect the premium edge using its local admin token; they need the `org_context` add-on. Mining prepares a command from local tool traces, while review and deterministic execution run through the customer-side `descles-loop` CLI. The browser does not silently execute a draft workflow.
+The free edge console shows the premium Data integration, Organization context, Trace mining, and Deterministic workflows pages with contact links for a paid deployment or a free design-partner pilot. In a licensed premium edge, the local console can inspect context and source sync, mine selected local traces into a draft, collect a human review with argument bindings, and run an approved deterministic workflow under an agent key. A draft never executes before review; edge policy and approvals still apply. The `descles-loop` CLI remains available for automation.
 
 ## If something does not work
 

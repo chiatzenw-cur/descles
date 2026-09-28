@@ -190,6 +190,26 @@ func TestEdgeMCPGovernsExecutesAndLearns(t *testing.T) {
 // shows it only to callers cleared for "finance".
 type memoExt struct{ seen []Observation }
 
+type adminOnlyTestExt struct{ *memoExt }
+
+func (a *adminOnlyTestExt) ID() string      { return "learning-admin" }
+func (a *adminOnlyTestExt) AdminOnly() bool { return true }
+
+func TestAdminOnlyPanelIsNotAnAgentConnector(t *testing.T) {
+	g, _, _, _ := newTestGateway(t)
+	g.Extensions = append(g.Extensions, &adminOnlyTestExt{&memoExt{}})
+	if g.extension("learning-admin") != nil {
+		t.Fatal("admin-only panel exposed at MCP connector route")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer vk_fin")
+	rec := httptest.NewRecorder()
+	g.ServeConnectors(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "learning-admin") {
+		t.Fatalf("admin-only panel in agent connector list: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func (m *memoExt) ID() string           { return OrgConnectorID }
 func (m *memoExt) Instructions() string { return "test" }
 func (m *memoExt) Tools() []ExtensionTool {

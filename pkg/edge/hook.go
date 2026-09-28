@@ -218,6 +218,9 @@ func (g *MCPGateway) ServeConnectors(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(ids)
 	var ext []string
 	for _, e := range g.Extensions {
+		if adminOnly, ok := e.(interface{ AdminOnly() bool }); ok && adminOnly.AdminOnly() {
+			continue
+		}
 		ext = append(ext, e.ID())
 	}
 	sort.Strings(ext)

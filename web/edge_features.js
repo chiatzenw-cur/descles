@@ -1,6 +1,6 @@
 "use strict";
-// Customer-edge pages. Context and source sync live on this edge, behind its
-// separate admin token. Mining/review/run are explicit local CLI operations.
+// Customer-edge pages. Premium operations use the edge's separate local admin
+// token; the local console provides mining, review and execution in the GUI.
 const edgeTokenKey = "descles-edge-admin";
 const edgeToken = () => sessionStorage.getItem(edgeTokenKey) || "";
 const edgeConnect = () => {
@@ -35,7 +35,7 @@ async function integrationsView() {
     if (!(await contextReady())) return edgeUnavailable();
     const sync = await edgeAPI("/admin/context/sync");
     const rows = sync.tools || [];
-    return `<div class="note">Configured source tools run through this edge's MCP connectors. Results are mapped to cited claims by <code>config/orgctx-extractors.yaml</code>; provider and connector credentials remain on the edge.</div>
+    return `<div class="note">Configured source tools run through this edge's MCP connectors. Results are mapped to cited claims by <code>config/orgctx-extractors.yaml</code>; provider and connector credentials remain on the edge. <a href="/admin/#integrations">Manage source sync on this edge ↗</a></div>
       <section class="card table-card"><div class="card-head"><h2>Source sync</h2>${pill(sync.configured ? "Configured" : "Not configured", sync.configured ? "ok" : "warn")}</div>
       ${rows.length ? table(["Source tool", "Last run", "Pages", "Claims", "Result"], rows.map(row => `<tr><td>${esc(row.tool)}</td><td>${esc(date(row.last_run))}</td><td>${num(row.pages)}</td><td>${num(row.claims)}</td><td>${row.error ? pill(row.error, "err") : pill("Completed", "ok")}</td></tr>`)) : empty(sync.configured ? "Waiting for a source run" : "No source sync configured", sync.configured ? "Refresh after the first scheduled run." : "Add sync entries and extractors to config/orgctx-extractors.yaml, then restart the premium edge. Context can also grow from governed agent tool results when learning is enabled.")}</section>
       <section class="card"><h2>What is ingested?</h2><p>Each mapped tool result creates claims with a source, asserting identity, observed time and labels. Open Unified context to inspect the resolved entity and any conflicting claims.</p><a href="#context">Explore unified context ↗</a></section>`;
@@ -46,7 +46,7 @@ async function unifiedContextView() {
   if (!edgeToken()) return edgeGate();
   try {
     if (!(await contextReady())) return edgeUnavailable();
-    return `<div class="note">Search the permission-aware entity graph on this edge. The local admin token can see all labels; enter labels below to preview what a restricted agent would see.</div>
+    return `<div class="note">Search the permission-aware entity graph on this edge. The local admin token can see all labels; enter labels below to preview what a restricted agent would see. <a href="/admin/#context">Manage context findings on this edge ↗</a></div>
       <section class="card"><h2>Find an entity</h2><div class="filters"><input id="context-query" aria-label="Search context" placeholder="Customer, person, email or system ID"><input id="context-labels" aria-label="Preview clearance labels" placeholder="Preview labels (optional)"><button data-context-search>Search</button></div><p class="muted">Identity keys unify records deterministically. Conflicting source claims remain visible and the selected value keeps its provenance.</p></section><div id="context-results"></div>`;
   } catch (error) { return edgeError(error); }
 }
@@ -90,9 +90,9 @@ async function miningView() {
       groups.set(row.trace, group);
     }
     const runs = [...groups.values()];
-    return `<div class="note">The Learning add-on mines recorded tool names and order from selected traces. The edge does not record tool arguments. A person must bind arguments and approve the draft before any deterministic run.</div>
+    return `<div class="note">The Learning add-on mines recorded tool names and order from selected traces. The edge does not record tool arguments. A person must bind arguments and approve the draft before any deterministic run. <a href="/admin/#mining">Open the local mining console ↗</a></div>
       <section class="card table-card"><div class="card-head"><h2>Recent tool traces</h2>${pill(runs.length + " trace(s)")}</div>${runs.length ? table(["Select", "Trace", "Agent", "Tool steps"], runs.map(run => `<tr><td><input type="checkbox" class="mine-trace" value="${esc(run.id)}" aria-label="Select trace ${esc(run.id)}"></td><td>${esc(run.id)}<small>${esc(date(run.at))}</small></td><td>${esc(run.agent || "—")}</td><td>${esc(run.tools.join(" → "))}</td></tr>`)) : empty("No tool traces yet", "Route repeated tasks through this edge, with an X-Descles-Trace per task.")}</section>
-      <section class="card"><h2>Prepare a mining run</h2><p>Choose similar traces above, name the workflow, then run the generated command in a terminal on your customer network. Optional outcome labels improve the later comparison.</p><div class="filters"><input id="mine-name" aria-label="Workflow name" placeholder="workflow-name"><button data-build-mine>Build command</button></div><pre id="mine-command" aria-live="polite">Select at least two traces.</pre></section>`;
+      <section class="card"><h2>Mine and review in the browser</h2><p>Open the edge console with its local admin token to select traces, create a draft, bind inputs and record a review. The command builder below remains available for automation.</p><a class="cta" href="/admin/#mining">Open trace mining ↗</a><div class="filters"><input id="mine-name" aria-label="Workflow name" placeholder="workflow-name"><button data-build-mine>Build CLI command</button></div><pre id="mine-command" aria-live="polite">Select at least two traces.</pre></section>`;
   } catch (error) { return edgeError(error); }
 }
 function buildMineCommand() {
@@ -107,10 +107,10 @@ function buildMineCommand() {
 async function workflowsView() {
   let registered = [];
   try { registered = (await api("/skills/")).skills || []; } catch (_) { /* registry may be unavailable */ }
-  return `<div class="note">A mined draft is not executable. Review binds every input, approves or rejects the plan, and pins the workflow digest. The runner checks that review before making any tool call; edge policy and approvals still apply.</div>
+  return `<div class="note">A mined draft is not executable. Review binds every input, approves or rejects the plan, and pins the workflow digest. The runner checks that review before making any tool call; edge policy and approvals still apply. <a href="/admin/#workflows">Open the local workflow console ↗</a></div>
     <div class="grid-two"><section class="card"><h2>1 · Review a draft</h2><p>After mining, inspect <code>SKILL.md</code> and <code>workflow.json</code>. Supply the missing argument bindings in a review file.</p><pre>descles-loop skill review --skill skill/my-workflow --review review.yaml</pre></section><section class="card"><h2>2 · Run deterministically</h2><p>The reviewed straight-line MCP workflow executes without a model. It stops on a failed or unexpected step.</p><pre>descles-loop skill run --skill skill/my-workflow --edge ${esc(location.origin)} --key-file agent-key --input customer_id=...</pre></section></div>
     <section class="card table-card"><div class="card-head"><h2>Registered capabilities</h2><a href="#skills">Open library ↗</a></div>${registered.length ? table(["Capability", "Version", "State", "Source runs"], registered.map(skill => `<tr><td>${esc(skill.name)}</td><td>${esc(skill.current_version)}</td><td>${pill(skill.status, skill.status === "published" ? "ok" : "warn")}</td><td>${num(skill.provenance?.generated_from?.length)}</td></tr>`)) : empty("No capabilities registered", "Local reviewed workflow files are not automatically published to the control-plane registry.")}</section>
-    <section class="card"><h2>Measure before adopting</h2><p>Compare success, interventions, completion time and cost on equivalent tasks. The browser does not execute mining or workflows; use the local <code>descles-loop</code> CLI so drafts and review artifacts remain in your environment.</p><a href="#mining">Choose traces ↗</a></section>`;
+    <section class="card"><h2>Measure before adopting</h2><p>Compare success, interventions, completion time and cost on equivalent tasks. The local edge console can mine, review and run workflows in your environment; the <code>descles-loop</code> CLI remains available for automation.</p><a class="cta" href="/admin/#workflows">Open deterministic workflows ↗</a></section>`;
 }
 
 pages.integrations = ["⇄", "Data integration", "CUSTOMER-SIDE SOURCES", "Source sync and claim extraction on this edge."];
