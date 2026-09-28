@@ -2,8 +2,8 @@
 :root{--paper:#faf9f5;--ink:#262923;--muted:#787b71;--line:#e2e3da;--orange:#e95b32;--green:#6d8069;font-family:"DM Sans","Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--paper)}
 body{background:var(--paper);color:var(--ink)}
 aside{background:#f1f2e9;color:var(--ink);border-right:1px solid var(--line)}
-.brand{color:var(--ink);font-weight:650}.brand-caption,.brand span.brand-caption{color:var(--muted)}
-.brand-mark{width:32px;height:32px;display:inline-flex;align-items:center;flex:none;position:relative;vertical-align:middle;margin-right:9px;background:url('/icon.svg') center/contain no-repeat}
+.brand{color:var(--orange);font-weight:800;letter-spacing:-1.7px}.brand-caption,.brand span.brand-caption{color:var(--muted);font-weight:600;letter-spacing:2px}
+.brand-mark{width:36px;height:36px;display:inline-flex;align-items:center;flex:none;position:relative;vertical-align:middle;margin-right:9px;background:url('/brand-mark.svg') center/contain no-repeat}
 .brand .brand-mark{display:inline-flex;margin:0 9px 0 0}
 .nav-label,.aside-bottom,.aside-bottom small,.sidebar-foot,.sidebar-foot small{color:var(--muted)}
 nav a,.nav-item{color:#69725f}nav a.active,.nav-item{background:#e6eadc;color:#4d6245}nav a:hover{background:#e6eadc}
