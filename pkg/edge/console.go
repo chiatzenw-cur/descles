@@ -85,6 +85,9 @@ func (a *ApprovalAdmin) activity(w http.ResponseWriter, r *http.Request) {
 	agent, kind := r.URL.Query().Get("agent"), r.URL.Query().Get("kind")
 	rows := []ActivityRow{}
 	for _, s := range spans {
+		if !a.allowsAgent(r, s.AgentID) {
+			continue
+		}
 		row := activityRow(s)
 		if (agent != "" && row.Agent != agent) || (kind != "" && row.Kind != kind) {
 			continue
@@ -92,6 +95,53 @@ func (a *ApprovalAdmin) activity(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 	writeJSONBody(w, map[string]any{"records": rows})
+}
+
+type usageDay struct {
+	Day    string  `json:"day"`
+	Input  int     `json:"input_tokens"`
+	Output int     `json:"output_tokens"`
+	Calls  int     `json:"calls"`
+	Cost   float64 `json:"cost_usd"`
+}
+
+func (a *ApprovalAdmin) usage(w http.ResponseWriter, r *http.Request) {
+	days := 14
+	if value := r.URL.Query().Get("days"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 30 {
+			http.Error(w, "days must be 1 to 30", http.StatusBadRequest)
+			return
+		}
+		days = parsed
+	}
+	const cap = 10000
+	spans, err := a.Recent.ListRecent(r.Context(), cap)
+	if err != nil {
+		http.Error(w, "usage unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1-days)
+	series := make([]usageDay, days)
+	for i := range series {
+		series[i].Day = start.AddDate(0, 0, i).Format("2006-01-02")
+	}
+	for _, s := range spans {
+		if s.SpanType != tracing.SpanTypeLLM || !a.allowsAgent(r, s.AgentID) {
+			continue
+		}
+		day := s.StartedAt.UTC().Format("2006-01-02")
+		idx := int(s.StartedAt.UTC().Sub(start).Hours() / 24)
+		if idx < 0 || idx >= days || series[idx].Day != day {
+			continue
+		}
+		series[idx].Calls++
+		series[idx].Input += intAttr(s, tracing.AttrInputToks)
+		series[idx].Output += intAttr(s, tracing.AttrOutputToks)
+		series[idx].Cost += floatAttr(s, tracing.AttrCostUSD)
+	}
+	writeJSONBody(w, map[string]any{"days": series, "limited": len(spans) == cap})
 }
 
 // policyView is what is in force: the control plane's rules (or, standalone,

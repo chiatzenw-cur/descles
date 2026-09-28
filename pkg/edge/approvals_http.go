@@ -72,6 +72,7 @@ func (a *ApprovalAdmin) Register(mux *http.ServeMux) {
 	mux.Handle("GET /admin/panels", a.auth(http.HandlerFunc(a.panels)))
 	if a.Recent != nil {
 		mux.Handle("GET /admin/activity", a.auth(http.HandlerFunc(a.activity)))
+		mux.Handle("GET /admin/usage", a.auth(http.HandlerFunc(a.usage)))
 	}
 	if a.Policy != nil {
 		mux.Handle("GET /admin/policy", a.auth(http.HandlerFunc(a.policyView)))
@@ -110,13 +111,46 @@ func (a *ApprovalAdmin) auth(next http.Handler) http.Handler {
 			http.Error(w, "edge admin token required", http.StatusUnauthorized)
 			return
 		}
-		if id.Role == "viewer" && r.Method != http.MethodGet && r.Method != http.MethodHead && !(r.Method == http.MethodPost && r.URL.Path == "/admin/policy/check") {
+		if id.ReadOnly() && r.Method != http.MethodGet && r.Method != http.MethodHead && !(id.Role == "viewer" && r.Method == http.MethodPost && r.URL.Path == "/admin/policy/check") {
 			http.Error(w, "viewer access is read-only", http.StatusForbidden)
+			return
+		}
+		if id.Scoped() && !scopedAdminRoute(r) {
+			http.Error(w, "edge-wide settings unavailable to team scope", http.StatusForbidden)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), adminIdentityKey{}, id))
 		next.ServeHTTP(w, r)
 	})
+}
+
+func scopedAdminRoute(r *http.Request) bool {
+	p := r.URL.Path
+	if r.Method == http.MethodGet {
+		switch p {
+		case "/admin/me", "/admin/info", "/admin/panels", "/admin/teams", "/admin/agents", "/admin/audit", "/admin/activity", "/admin/usage", "/admin/approvals":
+			return true
+		}
+		return strings.HasPrefix(p, "/admin/traces/")
+	}
+	if r.Method == http.MethodPost {
+		if p == "/admin/agents" {
+			return true
+		}
+		if strings.HasPrefix(p, "/admin/agents/") && strings.HasSuffix(p, "/rotate") {
+			return true
+		}
+		return strings.HasPrefix(p, "/admin/approvals/")
+	}
+	return r.Method == http.MethodDelete && strings.HasPrefix(p, "/admin/agents/")
+}
+
+func (a *ApprovalAdmin) allowsAgent(r *http.Request, agent string) bool {
+	id, _ := AdminFromContext(r.Context())
+	if !id.Scoped() {
+		return true
+	}
+	return a.GroupOf != nil && id.AllowsTeam(a.GroupOf(agent))
 }
 
 func (a *ApprovalAdmin) list(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +169,13 @@ func (a *ApprovalAdmin) list(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []Approval{}
 	}
-	writeJSONBody(w, map[string]any{"approvals": list})
+	visible := make([]Approval, 0, len(list))
+	for _, item := range list {
+		if a.allowsAgent(r, item.AgentID) {
+			visible = append(visible, item)
+		}
+	}
+	writeJSONBody(w, map[string]any{"approvals": visible})
 }
 
 func (a *ApprovalAdmin) decide(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +199,11 @@ func (a *ApprovalAdmin) decide(w http.ResponseWriter, r *http.Request) {
 	}
 	if id, ok := AdminFromContext(r.Context()); ok {
 		in.By = id.ID
+	}
+	item, err := a.Store.Get(r.Context(), r.PathValue("id"))
+	if err != nil || !a.allowsAgent(r, item.AgentID) {
+		http.Error(w, "approval not found", http.StatusNotFound)
+		return
 	}
 	out, err := a.Store.Decide(r.Context(), r.PathValue("id"), decision == "approve", in.By, in.Reason)
 	switch {
@@ -214,6 +259,18 @@ func (a *ApprovalAdmin) trace(w http.ResponseWriter, r *http.Request) {
 	if err != nil || t == nil {
 		writeJSONBody(w, map[string]any{"trace_id": id, "records": []TraceRecord{}})
 		return
+	}
+	if id, _ := AdminFromContext(r.Context()); id.Scoped() {
+		for _, s := range t.Spans {
+			if !a.allowsAgent(r, s.AgentID) {
+				http.Error(w, "trace not found", http.StatusNotFound)
+				return
+			}
+		}
+		if len(t.Spans) == 0 {
+			http.Error(w, "trace not found", http.StatusNotFound)
+			return
+		}
 	}
 	out := make([]TraceRecord, 0, len(t.Spans))
 	for _, s := range t.Spans {

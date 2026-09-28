@@ -48,6 +48,7 @@ type localEvent struct {
 	Actor  string    `json:"actor,omitempty"`
 	Action string    `json:"action"`
 	Target string    `json:"target"`
+	TeamID string    `json:"team_id,omitempty"`
 }
 type localState struct {
 	Teams     []localTeam       `json:"teams"`
@@ -182,7 +183,19 @@ func (m *localManagement) changed(next *localState, action, target string, r *ht
 	if id, ok := edge.AdminFromContext(r.Context()); ok {
 		actor = id.ID
 	}
-	next.Events = append(append([]localEvent(nil), m.state.Events...), localEvent{At: time.Now().UTC(), Actor: actor, Action: action, Target: target})
+	team := ""
+	if strings.HasPrefix(action, "agent.") {
+		for _, grant := range m.keys.Agents() {
+			if grant.AgentID == target {
+				team = grant.GroupID
+				break
+			}
+		}
+	}
+	if strings.HasPrefix(action, "team.") {
+		team = target
+	}
+	next.Events = append(append([]localEvent(nil), m.state.Events...), localEvent{At: time.Now().UTC(), Actor: actor, Action: action, Target: target, TeamID: team})
 	if len(next.Events) > 1000 {
 		next.Events = next.Events[len(next.Events)-1000:]
 	}
@@ -371,10 +384,23 @@ func (m *localManagement) deleteProvider(w http.ResponseWriter, r *http.Request)
 	localJSON(w, map[string]any{"removed": id})
 }
 
-func (m *localManagement) teams(w http.ResponseWriter, _ *http.Request) {
+func (m *localManagement) HasTeam(team string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	localJSON(w, map[string]any{"teams": append([]localTeam{}, m.state.Teams...)})
+	return m.hasTeam(team)
+}
+
+func (m *localManagement) teams(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, _ := edge.AdminFromContext(r.Context())
+	visible := []localTeam{}
+	for _, team := range m.state.Teams {
+		if id.AllowsTeam(team.ID) {
+			visible = append(visible, team)
+		}
+	}
+	localJSON(w, map[string]any{"teams": visible})
 }
 func (m *localManagement) addTeam(w http.ResponseWriter, r *http.Request) {
 	var in localTeam
@@ -432,8 +458,15 @@ func (m *localManagement) deleteTeam(w http.ResponseWriter, r *http.Request) {
 	localJSON(w, map[string]any{"removed": id})
 }
 
-func (m *localManagement) agents(w http.ResponseWriter, _ *http.Request) {
-	localJSON(w, map[string]any{"agents": m.keys.Agents()})
+func (m *localManagement) agents(w http.ResponseWriter, r *http.Request) {
+	id, _ := edge.AdminFromContext(r.Context())
+	visible := []edge.LocalKeyGrant{}
+	for _, agent := range m.keys.Agents() {
+		if id.AllowsTeam(agent.GroupID) {
+			visible = append(visible, agent)
+		}
+	}
+	localJSON(w, map[string]any{"agents": visible})
 }
 func (m *localManagement) issueAgent(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -457,6 +490,10 @@ func (m *localManagement) issueAgent(w http.ResponseWriter, r *http.Request) {
 		localError(w, 400, fmt.Errorf("team not found"))
 		return
 	}
+	if id, _ := edge.AdminFromContext(r.Context()); !id.AllowsTeam(in.GroupID) {
+		localError(w, 403, fmt.Errorf("team outside your scope"))
+		return
+	}
 	key, err := m.keys.Issue(in.ID, in.UserID, in.GroupID)
 	if err != nil {
 		localError(w, 400, err)
@@ -472,6 +509,10 @@ func (m *localManagement) rotateAgent(w http.ResponseWriter, r *http.Request) {
 	defer m.mu.Unlock()
 	for _, a := range m.keys.Agents() {
 		if a.AgentID == id {
+			if actor, _ := edge.AdminFromContext(r.Context()); !actor.AllowsTeam(a.GroupID) {
+				localError(w, 404, fmt.Errorf("agent not found"))
+				return
+			}
 			key, err := m.keys.Issue(id, a.UserID, a.GroupID)
 			if err != nil {
 				localError(w, 500, err)
@@ -489,12 +530,36 @@ func (m *localManagement) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	found := false
+	for _, agent := range m.keys.Agents() {
+		if agent.AgentID == id {
+			found = true
+			if actor, _ := edge.AdminFromContext(r.Context()); !actor.AllowsTeam(agent.GroupID) {
+				localError(w, 404, fmt.Errorf("agent not found"))
+				return
+			}
+			break
+		}
+	}
+	if !found {
+		localError(w, 404, fmt.Errorf("agent not found"))
+		return
+	}
+	group := m.keys.GroupOf(id)
 	if err := m.keys.Revoke(id); err != nil {
 		localError(w, 400, err)
 		return
 	}
 	next := m.state
-	_ = m.changed(&next, "agent.remove", id, r)
+	actor := "owner"
+	if identity, ok := edge.AdminFromContext(r.Context()); ok {
+		actor = identity.ID
+	}
+	next.Events = append(append([]localEvent(nil), next.Events...), localEvent{At: time.Now().UTC(), Actor: actor, Action: "agent.remove", Target: id, TeamID: group})
+	if len(next.Events) > 1000 {
+		next.Events = next.Events[len(next.Events)-1000:]
+	}
+	_ = m.save(next)
 	localJSON(w, map[string]any{"removed": id})
 }
 func (m *localManagement) hasTeam(id string) bool {
@@ -505,10 +570,16 @@ func (m *localManagement) hasTeam(id string) bool {
 	}
 	return false
 }
-func (m *localManagement) audit(w http.ResponseWriter, _ *http.Request) {
+func (m *localManagement) audit(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	events := append([]localEvent{}, m.state.Events...)
+	id, _ := edge.AdminFromContext(r.Context())
+	events := []localEvent{}
+	for _, event := range m.state.Events {
+		if !id.Scoped() || (event.TeamID != "" && id.AllowsTeam(event.TeamID)) {
+			events = append(events, event)
+		}
+	}
 	sort.Slice(events, func(i, j int) bool { return events[i].At.After(events[j].At) })
 	localJSON(w, map[string]any{"events": events, "integrity": "local history; not tamper-evident"})
 }

@@ -108,3 +108,50 @@ func TestConsoleActivityPolicyAndReplay(t *testing.T) {
 		t.Fatalf("replay: %v", rp)
 	}
 }
+
+func TestTeamScopeFiltersActivityAndUsageAndBlocksGlobalRoutes(t *testing.T) {
+	store, err := OpenApprovals(filepath.Join(t.TempDir(), "approvals.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	access, err := OpenAdminAccess(filepath.Join(t.TempDir(), "users.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamKey, err := access.IssueScoped("lead", "Team lead", "team_admin", []string{"red"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerKey, err := access.IssueScoped("reader", "Reader", "team_viewer", []string{"red"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	spans := &recentLog{spans: []*tracing.Span{
+		{SpanType: tracing.SpanTypeLLM, AgentID: "red-agent", StartedAt: now, Attributes: map[string]any{tracing.AttrInputToks: 12, tracing.AttrOutputToks: 4}},
+		{SpanType: tracing.SpanTypeLLM, AgentID: "blue-agent", StartedAt: now, Attributes: map[string]any{tracing.AttrInputToks: 900, tracing.AttrOutputToks: 300}},
+	}}
+	a := &ApprovalAdmin{Store: store, Token: "owner-secret", Access: access, Recent: spans, Info: func() map[string]any { return map[string]any{"mode": "standalone"} }, GroupOf: func(agent string) string {
+		if agent == "red-agent" {
+			return "red"
+		}
+		return "blue"
+	}}
+	mux := http.NewServeMux()
+	a.Register(mux)
+	if code, activity := consoleCall(t, mux, teamKey, "GET", "/admin/activity", ""); code != 200 || len(activity["records"].([]any)) != 1 {
+		t.Fatalf("scoped activity: %d %v", code, activity)
+	}
+	if code, usage := consoleCall(t, mux, teamKey, "GET", "/admin/usage?days=1", ""); code != 200 || usage["days"].([]any)[0].(map[string]any)["input_tokens"].(float64) != 12 {
+		t.Fatalf("scoped usage: %d %v", code, usage)
+	}
+	for _, route := range []string{"/admin/operators", "/admin/providers", "/admin/policy", "/admin/context/search"} {
+		if code, _ := consoleCall(t, mux, teamKey, "GET", route, ""); code != 403 && code != 404 {
+			t.Errorf("global route %s: %d", route, code)
+		}
+	}
+	if code, _ := consoleCall(t, mux, viewerKey, "POST", "/admin/approvals/abc/approve", `{}`); code != 403 {
+		t.Fatalf("team viewer mutation: %d", code)
+	}
+}

@@ -21,11 +21,29 @@ import (
 // bootstrap token remains an owner recovery credential; named tokens identify
 // the person operating the console without putting credentials in audit data.
 type AdminIdentity struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Role   string `json:"role"`
-	Shared bool   `json:"shared,omitempty"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Role    string   `json:"role"`
+	TeamIDs []string `json:"team_ids,omitempty"`
+	Shared  bool     `json:"shared,omitempty"`
 }
+
+func (id AdminIdentity) Scoped() bool { return id.Role == "team_admin" || id.Role == "team_viewer" }
+func (id AdminIdentity) AllowsTeam(team string) bool {
+	if !id.Scoped() {
+		return true
+	}
+	if team == "" {
+		return false
+	}
+	for _, allowed := range id.TeamIDs {
+		if allowed == team {
+			return true
+		}
+	}
+	return false
+}
+func (id AdminIdentity) ReadOnly() bool { return id.Role == "viewer" || id.Role == "team_viewer" }
 
 type adminIdentityKey struct{}
 
@@ -63,7 +81,7 @@ func OpenAdminAccess(path string) (*AdminAccess, error) {
 	seenHash := map[string]bool{}
 	for _, g := range a.grants {
 		b, err := hex.DecodeString(g.KeySHA256)
-		if !adminID.MatchString(g.ID) || strings.EqualFold(g.ID, "owner") || strings.TrimSpace(g.Name) == "" || (g.Role != "admin" && g.Role != "viewer") || err != nil || len(b) != sha256.Size || seen[g.ID] || seenHash[g.KeySHA256] {
+		if !adminID.MatchString(g.ID) || strings.EqualFold(g.ID, "owner") || strings.TrimSpace(g.Name) == "" || !validAdminScope(g.Role, g.TeamIDs) || err != nil || len(b) != sha256.Size || seen[g.ID] || seenHash[g.KeySHA256] {
 			return nil, errors.New("console users: invalid saved user")
 		}
 		seen[g.ID] = true
@@ -116,10 +134,34 @@ func (a *AdminAccess) save(grants []adminGrant) error {
 	return nil
 }
 
+func validAdminScope(role string, teams []string) bool {
+	switch role {
+	case "admin", "viewer":
+		return len(teams) == 0
+	case "team_admin", "team_viewer":
+		if len(teams) == 0 {
+			return false
+		}
+		seen := map[string]bool{}
+		for _, team := range teams {
+			if !adminID.MatchString(team) || seen[team] {
+				return false
+			}
+			seen[team] = true
+		}
+		return true
+	}
+	return false
+}
+
 func (a *AdminAccess) Issue(id, name, role string) (string, error) {
+	return a.IssueScoped(id, name, role, nil)
+}
+
+func (a *AdminAccess) IssueScoped(id, name, role string, teams []string) (string, error) {
 	id, name = strings.TrimSpace(id), strings.TrimSpace(name)
-	if !adminID.MatchString(id) || strings.EqualFold(id, "owner") || name == "" || len(name) > 120 || (role != "admin" && role != "viewer") {
-		return "", errors.New("enter a unique user ID, name and admin or viewer role")
+	if !adminID.MatchString(id) || strings.EqualFold(id, "owner") || name == "" || len(name) > 120 || !validAdminScope(role, teams) {
+		return "", errors.New("enter a unique user ID, name, valid role and team scope")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -134,7 +176,7 @@ func (a *AdminAccess) Issue(id, name, role string) (string, error) {
 	}
 	token := "ak_" + hex.EncodeToString(b)
 	sum := sha256.Sum256([]byte(token))
-	next := append(append([]adminGrant(nil), a.grants...), adminGrant{AdminIdentity: AdminIdentity{ID: id, Name: name, Role: role}, KeySHA256: hex.EncodeToString(sum[:])})
+	next := append(append([]adminGrant(nil), a.grants...), adminGrant{AdminIdentity: AdminIdentity{ID: id, Name: name, Role: role, TeamIDs: append([]string(nil), teams...)}, KeySHA256: hex.EncodeToString(sum[:])})
 	if err := a.save(next); err != nil {
 		return "", err
 	}
@@ -161,7 +203,11 @@ func (a *ApprovalAdmin) me(w http.ResponseWriter, r *http.Request) {
 	writeJSONBody(w, id)
 }
 
-func (a *ApprovalAdmin) operators(w http.ResponseWriter, _ *http.Request) {
+func (a *ApprovalAdmin) operators(w http.ResponseWriter, r *http.Request) {
+	if id, _ := AdminFromContext(r.Context()); id.Scoped() {
+		http.Error(w, "edge-wide users unavailable to team scope", http.StatusForbidden)
+		return
+	}
 	if a.Access == nil {
 		writeJSONBody(w, map[string]any{"users": []AdminIdentity{{ID: "owner", Name: "Bootstrap owner token", Role: "owner", Shared: true}}})
 		return
@@ -174,14 +220,30 @@ func (a *ApprovalAdmin) issueOperator(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "owner token required", http.StatusForbidden)
 		return
 	}
-	var in struct{ ID, Name, Role string }
+	var in struct {
+		ID, Name, Role string
+		TeamIDs        []string `json:"team_ids"`
+	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
 		http.Error(w, "invalid user", http.StatusBadRequest)
 		return
 	}
-	key, err := a.Access.Issue(in.ID, in.Name, in.Role)
+	if len(in.TeamIDs) > 0 {
+		check, ok := a.LocalManagement.(interface{ HasTeam(string) bool })
+		if !ok {
+			http.Error(w, "team scope unavailable on this edge", http.StatusBadRequest)
+			return
+		}
+		for _, team := range in.TeamIDs {
+			if !check.HasTeam(team) {
+				http.Error(w, "team not found", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	key, err := a.Access.IssueScoped(in.ID, in.Name, in.Role, in.TeamIDs)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

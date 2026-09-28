@@ -121,3 +121,74 @@ func TestStandaloneConsoleManagementPersistsAndMasksSecrets(t *testing.T) {
 		t.Fatalf("invalid policy accepted: %d %s", code, body)
 	}
 }
+
+func TestTeamAdminCannotManageAnotherTeamsKeys(t *testing.T) {
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "seed.json")
+	sum := sha256.Sum256([]byte("seed-key"))
+	raw, _ := json.Marshal([]edge.LocalKeyGrant{{KeySHA256: hex.EncodeToString(sum[:]), OrgID: "local", AgentID: "seed"}})
+	if err := os.WriteFile(seed, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := edge.LoadWritableKeyring(seed, filepath.Join(dir, "keys.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policySource := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policySource, []byte("defaults:\n  tools: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := openLocalManagement(dir, keys, provider.NewRegistry(nil), nil, "owner-secret", policy.NewHolder(policy.AllowAll()), policySource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, err := edge.OpenAdminAccess(filepath.Join(dir, "console-users.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamKey, err := access.IssueScoped("lead", "Lead", "team_admin", []string{"red"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := edge.OpenApprovals(filepath.Join(dir, "approvals.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	admin := &edge.ApprovalAdmin{Store: store, Token: "owner-secret", Access: access, GroupOf: keys.GroupOf, LocalManagement: m}
+	mux := http.NewServeMux()
+	admin.Register(mux)
+	call := func(token, method, path, body string) (int, string) {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+	for _, team := range []string{"red", "blue"} {
+		if code, body := call("owner-secret", "POST", "/admin/teams", `{"id":"`+team+`","name":"`+team+`"}`); code != 200 {
+			t.Fatalf("team: %d %s", code, body)
+		}
+	}
+	if code, body := call(teamKey, "POST", "/admin/agents", `{"id":"blue-bot","group_id":"blue"}`); code != 403 {
+		t.Fatalf("cross-team issue: %d %s", code, body)
+	}
+	if code, body := call(teamKey, "POST", "/admin/agents", `{"id":"red-bot","group_id":"red"}`); code != 200 {
+		t.Fatalf("in-team issue: %d %s", code, body)
+	}
+	if code, body := call("owner-secret", "POST", "/admin/agents", `{"id":"blue-bot","group_id":"blue"}`); code != 200 {
+		t.Fatalf("owner issue: %d %s", code, body)
+	}
+	if code, body := call(teamKey, "GET", "/admin/agents", ""); code != 200 || !strings.Contains(body, "red-bot") || strings.Contains(body, "blue-bot") {
+		t.Fatalf("scoped list: %d %s", code, body)
+	}
+	if code, body := call(teamKey, "POST", "/admin/agents/blue-bot/rotate", ""); code != 404 {
+		t.Fatalf("cross-team rotation: %d %s", code, body)
+	}
+	if code, body := call(teamKey, "DELETE", "/admin/agents/blue-bot", ""); code != 404 {
+		t.Fatalf("cross-team revoke: %d %s", code, body)
+	}
+	if code, body := call(teamKey, "GET", "/admin/providers", ""); code != 403 {
+		t.Fatalf("global provider access: %d %s", code, body)
+	}
+}
