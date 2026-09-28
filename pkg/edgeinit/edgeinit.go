@@ -282,11 +282,13 @@ func Generate(o Options) (*Result, error) {
 		fill = append(fill, "config/secrets/"+s)
 	}
 	res.Next = []string{
-		"Put credentials in: " + strings.Join(fill, ", ") + " (they never leave this machine).",
 		"Review config/policy.yaml and config/edge-mcp.yaml.",
 		"Start: descles edge up --dir " + o.Dir + "   (or: docker compose -f " + filepath.ToSlash(filepath.Join(o.Dir, "compose.yml")) + " up -d)",
+		fmt.Sprintf("Open the edge console at http://127.0.0.1:%d/admin/ (admin token in config/secrets/admin-token). Add providers, teams and agent keys there.", o.Port),
 		fmt.Sprintf("Connect an agent: descles connect claude-code --edge http://127.0.0.1:%d --key <agent key>", o.Port),
-		fmt.Sprintf("Open the edge console (Activity, Policy, Approvals, Plans) at http://127.0.0.1:%d/admin/ (token in config/secrets/admin-token).", o.Port),
+	}
+	if o.Mode != "standalone" {
+		res.Next = append([]string{"Put credentials in: " + strings.Join(fill, ", ") + " (they never leave this machine)."}, res.Next...)
 	}
 	if o.Mode == "selfhost" {
 		res.Next = append(res.Next, fmt.Sprintf("Open the Team workspace at http://127.0.0.1:%d/ (sign in with a customer control-plane admin or organization token).", o.Port))

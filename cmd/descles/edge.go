@@ -257,9 +257,13 @@ func runEdgeUp(args []string) error {
 	return fmt.Errorf("edge did not become healthy; check: docker compose -f %s logs", compose)
 }
 
-// secretsFilled refuses to start with empty credential placeholders, which
-// would only produce a confusing container crash loop.
+// secretsFilled refuses missing non-interactive credentials. Standalone model
+// provider keys may be added later through the local console.
 func secretsFilled(dir string) error {
+	standalone := false
+	if env, err := os.ReadFile(filepath.Join(dir, "edge.env")); err == nil {
+		standalone = strings.Contains(string(env), "DESCLES_EDGE_KEYS_FILE=") && strings.Contains(string(env), "DESCLES_EDGE_REPORT_URL=off")
+	}
 	entries, err := os.ReadDir(filepath.Join(dir, "config", "secrets"))
 	if err != nil {
 		return nil
@@ -267,6 +271,9 @@ func secretsFilled(dir string) error {
 	var empty []string
 	for _, e := range entries {
 		if info, err := e.Info(); err == nil && !e.IsDir() && info.Size() == 0 {
+			if standalone && (e.Name() == "openai-key" || e.Name() == "anthropic-key") {
+				continue
+			}
 			empty = append(empty, filepath.ToSlash(filepath.Join("config", "secrets", e.Name())))
 		}
 	}

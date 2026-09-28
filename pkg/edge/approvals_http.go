@@ -8,7 +8,9 @@ import (
 	"errors"
 	"github.com/chiatzenw-cur/descles/pkg/policy"
 	"github.com/chiatzenw-cur/descles/pkg/tracing"
+	"github.com/chiatzenw-cur/descles/web"
 	"io"
+	"io/fs"
 	"net/http"
 	"strings"
 	"time"
@@ -40,6 +42,11 @@ type ApprovalAdmin struct {
 	GroupOf func(agentID string) string
 	// Panels are extra console panels from extensions.
 	Panels []AdminPanel
+	// LocalManagement supplies standalone edge configuration routes. Managed
+	// edges keep identity and provider administration on their own control plane.
+	LocalManagement interface {
+		RegisterAdmin(*http.ServeMux, func(http.Handler) http.Handler)
+	}
 }
 
 // Register mounts the admin routes. Without a token they are not served.
@@ -69,6 +76,9 @@ func (a *ApprovalAdmin) Register(mux *http.ServeMux) {
 	}
 	for _, p := range a.Panels {
 		p.RegisterAdmin(mux, a.auth)
+	}
+	if a.LocalManagement != nil {
+		a.LocalManagement.RegisterAdmin(mux, a.auth)
 	}
 }
 
@@ -135,9 +145,15 @@ func (a *ApprovalAdmin) decide(w http.ResponseWriter, r *http.Request) {
 func (a *ApprovalAdmin) page(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
-	_, _ = io.WriteString(w, adminPage)
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	page, err := fs.ReadFile(web.FS(), "edge_admin.html")
+	if err != nil {
+		http.Error(w, "console unavailable", http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(page)
 }
 
 // TraceRecord is one locally recorded span as the admin API returns it.

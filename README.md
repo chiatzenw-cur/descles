@@ -24,7 +24,7 @@ The edge enforces calls that actually pass through it. A model URL change alone 
 This walkthrough runs one free edge on your computer. You need:
 
 1. **Docker Desktop**, installed and running. Use Docker's instructions for [Windows](https://docs.docker.com/desktop/setup/install/windows-install/), [Mac](https://docs.docker.com/desktop/setup/install/mac-install/), or [Linux](https://docs.docker.com/desktop/setup/install/linux/). Wait until Docker says its engine is running.
-2. A **model provider API key**. For this walkthrough, create one in the [Claude Console](https://platform.claude.com/docs/en/manage-claude/authentication) under **Settings → API keys**. This is separate from a Claude chat subscription. Keep the key private; you will paste it into a file on your computer.
+2. A **model provider API key**. For this walkthrough, create one in the [Claude Console](https://platform.claude.com/docs/en/manage-claude/authentication) under **Settings → API keys**. This is separate from a Claude chat subscription. Keep the key private; you will enter it in your own edge console.
 3. The **Descles CLI** for your operating system from [Releases](https://github.com/chiatzenw-cur/descles/releases). Under the newest release's **Assets**, choose the file beginning `descles-` (the CLI, not `descles-edge-`) and ending in your OS and CPU type: `windows-amd64.exe` for most Windows PCs, `darwin-arm64` for Apple Silicon Macs, `darwin-amd64` for Intel Macs, or `linux-amd64` for most Linux PCs. Put it in a new folder named `Descles` in your Documents folder. Rename the downloaded file to `descles.exe` on Windows or `descles` on Mac/Linux.
 
 Open a terminal **in that Descles folder**. On Windows, open the folder in File Explorer, right-click empty space, and choose **Open in Terminal**. On Mac/Linux, open Terminal and change to the folder (for example, `cd ~/Documents/Descles`). The `.` at the start of the commands below means “run the file in this folder.” Paste commands one at a time.
@@ -44,9 +44,7 @@ chmod +x ./descles
 
 The command creates a `my-edge` folder and prints an **agent key once**. Copy that key somewhere private. It also creates an admin token in `my-edge/config/secrets/admin-token`.
 
-Now open `my-edge/config/secrets/anthropic-key` in a **plain-text editor**. Paste your Claude API key as the file's only content and save it. Do not add quotes or a `.txt` extension. The file stays on your computer and is mounted into the edge container; never paste the key into an issue or chat.
-
-Start the edge in the same terminal:
+Start the edge in the same terminal. You can leave the generated provider key placeholder empty and add a provider from the browser console:
 
 ```powershell
 # Windows
@@ -58,15 +56,15 @@ Start the edge in the same terminal:
 ./descles edge up --dir my-edge
 ```
 
-When you see `edge healthy`, open **[http://127.0.0.1:8081/admin/](http://127.0.0.1:8081/admin/)** in a browser on that computer. Paste the **admin token** from `my-edge/config/secrets/admin-token` when asked. You should see **Activity, Policy, Approvals, and Plans**. Activity is empty until an agent sends a call. The Plans tab explains which features require the paid, customer-hosted package and links to the free design-partner pilot. The edge root (`http://127.0.0.1:8081/`) also opens this console in current builds.
+When you see `edge healthy`, open **[http://127.0.0.1:8081/admin/](http://127.0.0.1:8081/admin/)** in a browser on that computer. Paste the **admin token** from `my-edge/config/secrets/admin-token` when asked. Open **Providers**, enter `anthropic` as the name, `https://api.anthropic.com` as the base URL, `claude-*` as the model pattern, and paste your Claude API key. The key is encrypted in the edge's local data volume using the admin token; it is not returned by list pages. You can also use the original `my-edge/config/secrets/anthropic-key` file instead. See the [console guide](docs/EDGE-CONSOLE.md) for teams, agent keys, policy, traces and storage.
 
 | Secret | Where it comes from | What it is for |
 |---|---|---|
-| Provider API key | Claude Console | Lets the edge call the model provider; only the edge stores it |
+| Provider API key | Claude Console | Lets the edge call the model provider; enter it in Providers or the generated local secret file |
 | Agent key | Printed once by `edge init` | Lets your agent call the edge; use it with `descles connect` |
 | Admin token | `my-edge/config/secrets/admin-token` | Opens the local console and approves calls; do not give it to agents |
 
-To use OpenAI instead of Claude, run `edge init` with `--providers openai`, create an [OpenAI API key](https://platform.openai.com/docs/quickstart/make-your-first-api-request), and put it in `my-edge/config/secrets/openai-key`. For another OpenAI-compatible provider, also pass its HTTPS URL with `--openai-base`. To build the CLI from source instead of downloading it, install Go 1.27+ and run `go install github.com/chiatzenw-cur/descles/cmd/descles@latest`.
+To use OpenAI instead of Claude, run `edge init` with `--providers openai`, create an [OpenAI API key](https://platform.openai.com/docs/quickstart/make-your-first-api-request), then enter `openai`, `https://api.openai.com/v1`, and that key on the **Providers** page. For another OpenAI-compatible provider, use its HTTPS base URL and optional model patterns there. To build the CLI from source instead of downloading it, install Go 1.27+ and run `go install github.com/chiatzenw-cur/descles/cmd/descles@latest`.
 
 This local setup publishes port `8081` only to your own computer. Standalone mode sends **no reports to Descles**. Model requests still go to the provider you configure. The edge records decisions and usage, not prompts or model responses; pending approval arguments are stored locally until the approval closes. See [data flows](docs/DATA-FLOWS.md). For a shared production deployment, use your own TLS ingress and access controls, and pin the container image by digest.
 
@@ -82,7 +80,7 @@ First install the agent you want to use. Return to the terminal in your `Descles
 .\descles.exe connect openai      --edge http://127.0.0.1:8081 --key "PASTE_AGENT_KEY_HERE"
 ```
 
-On Mac/Linux, use the same line with `./descles` in place of `.\descles.exe`. `claude-code` writes model, hook, and MCP settings. `codex` writes a model-provider profile and MCP settings; it cannot add a shell pre-execution hook. `hermes` and `openai` print settings for you to copy into those clients. After connecting, make a model or tool call in your agent and refresh the console's **Activity** tab. For exact client settings and limitations, see [Connect agents](docs/CONNECT-AGENTS.md).
+On Mac/Linux, use the same line with `./descles` in place of `.\descles.exe`. `claude-code` writes model, hook, and MCP settings. `codex` writes a model-provider profile and MCP settings; it cannot add a shell pre-execution hook. `hermes` and `openai` print settings for you to copy into those clients. After connecting, make a model or tool call in your agent and refresh **Model traces** or **Tool traces** in the edge console. For exact client settings and limitations, see [Connect agents](docs/CONNECT-AGENTS.md).
 
 Any API client can also use the edge directly. Send the agent key as a bearer token. These are optional checks; replace the placeholder with your saved agent key:
 
@@ -116,7 +114,7 @@ When policy requires approval, open the **Approvals** tab at `/admin/`, or use `
 
 The paid control plane and premium edge run in **your** network. The edge fetches signed policy bundles from your control plane without reporting to Descles. You keep your provider keys, tool credentials and execution records. The pilot does not cover charges from model providers or your own infrastructure. We are especially interested in teams running more than one agent or needing shared approvals, scoped access, or organizational context. [Tell us what you are building](mailto:outreach@descles.com?subject=Descles%20design%20partner%20pilot). See [self-hosted mode in the CLI guide](docs/CONNECT-AGENTS.md) for the technical path.
 
-In Team self-hosted mode, the **full workspace** is served by your edge at `http://127.0.0.1:8081/`, using a customer control-plane admin or organization token to sign in. Management stays on your control plane; usage and traces come from that edge. The smaller `/admin/` console remains available for local policy and approvals with its separate edge admin token. The free standalone edge opens `/admin/` when you visit `/` because it has no Team control plane.
+In Team self-hosted mode, the **full workspace** is served by your edge at `http://127.0.0.1:8081/`, using a customer control-plane admin or organization token to sign in. Management stays on your control plane; usage and traces come from that edge. `/admin/` remains available for local traces, policy inspection and approvals with its separate edge admin token. In free standalone mode, `/admin/` includes provider credentials, teams, agent keys, policy editing and audit/activity views; visiting `/` opens it.
 
 The Team workspace includes pages for source sync, unified context, trace mining and reviewed workflows. Context and sync inspect the premium edge using its local admin token; they need the `org_context` add-on. Mining prepares a command from local tool traces, while review and deterministic execution run through the customer-side `descles-loop` CLI. The browser does not silently execute a draft workflow.
 

@@ -30,6 +30,7 @@ import (
 	"github.com/chiatzenw-cur/descles/pkg/provider"
 	"github.com/chiatzenw-cur/descles/pkg/proxy"
 	"github.com/chiatzenw-cur/descles/pkg/storage"
+	"github.com/chiatzenw-cur/descles/web"
 )
 
 // Run is the customer-side data plane. Provider credentials, prompts and
@@ -54,9 +55,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		if p.APIKey != "" {
 			keyedProviders = append(keyedProviders, p)
 		}
-	}
-	if len(keyedProviders) == 0 && cfg.AnthropicAPIKey == "" {
-		return fmt.Errorf("configure a local provider key before starting edge mode")
 	}
 	edgeID := strings.TrimSpace(os.Getenv("DESCLES_EDGE_ID"))
 	if !edge.ValidEdgeID(edgeID) {
@@ -138,7 +136,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		if keyFile == "" || cfg.PolicyFile == "" {
 			return fmt.Errorf("local edge mode requires DESCLES_EDGE_KEYS_FILE and DESCLES_POLICY_FILE")
 		}
-		keys, err = edge.LoadKeyring(keyFile)
+		keys, err = edge.LoadWritableKeyring(keyFile, filepath.Join(filepath.Dir(cfg.SQLitePath), "agent-keys.json"))
 		if err != nil {
 			return err
 		}
@@ -146,7 +144,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		if err != nil {
 			return err
 		}
-		pol, err := policy.LoadFile(cfg.PolicyFile)
+		policyPath := cfg.PolicyFile
+		if override := filepath.Join(filepath.Dir(cfg.SQLitePath), "policy.yaml"); override != policyPath {
+			if _, statErr := os.Stat(override); statErr == nil {
+				policyPath = override
+			} else if !os.IsNotExist(statErr) {
+				return statErr
+			}
+		}
+		pol, err := policy.LoadFile(policyPath)
 		if err != nil {
 			return err
 		}
@@ -178,7 +184,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	}
 	metered := &edge.MeteredStore{Storage: local, Outbox: queue, EdgeID: edgeID, Filter: reportFilter(keyedProviders, cfg.AnthropicAPIKey != "", aliasTargets)}
 	defer metered.Close()
-	h := proxy.New(cfg, provider.NewRegistry(keyedProviders), holder, metered, logger)
+	registry := provider.NewRegistry(keyedProviders)
+	var localManagement *localManagement
+	h := proxy.New(cfg, registry, holder, metered, logger)
 	if bundle != nil {
 		h.KeyResolver = bundle.Resolve
 		h.GroupOfAgent = func(agentID string) string { grant, _ := bundle.AgentGrant(agentID); return grant.GroupName }
@@ -190,18 +198,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		h.HostedProviderAllowed = bundle.ProviderAllowed
 	} else {
 		h.KeyResolver = keys.Resolve
+		h.GroupOfAgent = keys.GroupOf
 	}
 	// An agent cannot substitute an arbitrary BYOK endpoint to reach an internal
 	// host or move requests outside the configured provider set.
-	allowed := map[string]bool{}
-	for _, p := range keyedProviders {
-		allowed[origin(p.BaseURL)] = true
-	}
-	if cfg.AnthropicAPIKey != "" {
-		allowed[origin(cfg.AnthropicBaseURL)] = true
-	}
 	h.EgressCheck = func(_ string, baseURL string) error {
-		if !allowed[origin(baseURL)] {
+		if !registry.AllowsOrigin(baseURL) && !(cfg.AnthropicAPIKey != "" && origin(baseURL) == origin(cfg.AnthropicBaseURL)) {
 			return fmt.Errorf("upstream not configured by edge administrator")
 		}
 		return nil
@@ -264,6 +266,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	}
 	defer closeApprovals()
 	if admin != nil {
+		if keys != nil {
+			localManagement, err = openLocalManagement(filepath.Dir(cfg.SQLitePath), keys, registry, keyedProviders, admin.Token, holder, cfg.PolicyFile)
+			if err != nil {
+				closeMCP()
+				return err
+			}
+		}
 		mcp.Approvals = admin.Store
 		if mcp.Notifier, err = approvalNotifier(logger); err != nil {
 			closeMCP()
@@ -273,6 +282,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 		admin.Recent = metered
 		admin.Policy = holder
 		admin.GroupOf = mcp.GroupOf
+		if localManagement != nil {
+			admin.LocalManagement = localManagement
+		}
 		for _, e := range mcp.Extensions {
 			if p, ok := e.(edge.AdminPanel); ok {
 				admin.Panels = append(admin.Panels, p)
@@ -305,6 +317,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, plugins ..
 	if workspaceOrigin != nil {
 		registerCustomerWorkspace(mux, inner, workspaceOrigin, orgID)
 	} else if admin != nil {
+		assets := web.Handler()
+		for _, path := range []string{"/style.css", "/brand.css", "/icons.js", "/edge_admin.css", "/edge_admin.js"} {
+			mux.Handle("GET "+path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Cache-Control", "no-store")
+				assets.ServeHTTP(w, r)
+			}))
+		}
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 		})
@@ -395,6 +414,7 @@ func edgeMCP(logger *slog.Logger, spans *edge.MeteredStore, holder *policy.Holde
 		g.BundleLabel = bundle.ContextLabels
 	} else {
 		g.Resolve = keys.Resolve
+		g.GroupOf = keys.GroupOf
 	}
 	taken := map[string]bool{}
 	for _, c := range g.Config.Connectors {

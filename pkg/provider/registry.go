@@ -1,6 +1,10 @@
 package provider
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+	"sync"
+)
 
 // Config declares one upstream provider (M2 multi-provider routing).
 // Providers are OpenAI-compatible, so "multi-provider" is mostly a matter of
@@ -29,6 +33,7 @@ type Provider struct {
 
 // Registry routes requests to one of several providers by model.
 type Registry struct {
+	mu        sync.RWMutex
 	providers []Provider
 }
 
@@ -53,7 +58,9 @@ func NewRegistry(cfgs []Config) *Registry {
 // model pattern wins; otherwise the default (a provider with no model list) is
 // used; else the first provider.
 func (r *Registry) Resolve(model string) Provider {
-	if provider, ok := r.ResolveMatch(model); ok {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if provider, ok := r.resolveMatch(model); ok {
 		return provider
 	}
 	if len(r.providers) == 0 {
@@ -66,6 +73,12 @@ func (r *Registry) Resolve(model string) Provider {
 // Gateways should use this strict form so unknown models are never sent to an
 // arbitrary first provider.
 func (r *Registry) ResolveMatch(model string) (Provider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.resolveMatch(model)
+}
+
+func (r *Registry) resolveMatch(model string) (Provider, bool) {
 	if len(r.providers) == 0 || model == "" {
 		return Provider{}, false
 	}
@@ -88,6 +101,8 @@ func (r *Registry) ResolveMatch(model string) (Provider, bool) {
 
 // Default returns the default (first real / catch-all) provider version.
 func (r *Registry) Default() Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if len(r.providers) == 0 {
 		return Provider{}
 	}
@@ -97,12 +112,39 @@ func (r *Registry) Default() Provider {
 // ByName selects a provider for endpoints, such as /models, that carry no
 // model in their request body.
 func (r *Registry) ByName(name string) (Provider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, provider := range r.providers {
 		if provider.Name == name {
 			return provider, true
 		}
 	}
 	return Provider{}, false
+}
+
+// Replace atomically publishes a newly validated customer provider set.
+func (r *Registry) Replace(cfgs []Config) {
+	next := NewRegistry(cfgs)
+	r.mu.Lock()
+	r.providers = next.providers
+	r.mu.Unlock()
+}
+
+func (r *Registry) AllowsOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	want := strings.ToLower(u.Scheme + "://" + u.Host)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		v, err := url.Parse(p.Upstream.BaseURL)
+		if err == nil && strings.ToLower(v.Scheme+"://"+v.Host) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesModel(patterns []string, model string) bool {
