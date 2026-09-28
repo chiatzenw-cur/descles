@@ -3,7 +3,6 @@ package edge
 import (
 	"context"
 
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"github.com/chiatzenw-cur/descles/pkg/policy"
@@ -55,6 +54,8 @@ func (a *ApprovalAdmin) Register(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /admin/{$}", a.page)
+	mux.HandleFunc("POST /admin/session", a.createSession)
+	mux.HandleFunc("DELETE /admin/session", a.deleteSession)
 	mux.Handle("GET /admin/me", a.auth(http.HandlerFunc(a.me)))
 	mux.Handle("GET /admin/operators", a.auth(http.HandlerFunc(a.operators)))
 	if a.Access != nil {
@@ -91,24 +92,13 @@ func (a *ApprovalAdmin) Register(mux *http.ServeMux) {
 
 func (a *ApprovalAdmin) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
-			http.Error(w, "edge admin token required", http.StatusUnauthorized)
-			return
-		}
-		got := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-		id := AdminIdentity{}
-		if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(a.Token)) == 1 {
-			id = AdminIdentity{ID: "owner", Name: "Bootstrap owner token", Role: "owner", Shared: true}
-		} else if a.Access != nil {
-			var ok bool
-			id, ok = a.Access.Resolve(got)
-			if !ok {
-				http.Error(w, "edge admin token required", http.StatusUnauthorized)
+		id, err := a.sessionIdentity(r)
+		if err != nil {
+			if errors.Is(err, errCrossOrigin) {
+				http.Error(w, "same-origin browser request required", http.StatusForbidden)
 				return
 			}
-		} else {
-			http.Error(w, "edge admin token required", http.StatusUnauthorized)
+			http.Error(w, "edge admin session or token required", http.StatusUnauthorized)
 			return
 		}
 		if id.ReadOnly() && r.Method != http.MethodGet && r.Method != http.MethodHead && !(id.Role == "viewer" && r.Method == http.MethodPost && r.URL.Path == "/admin/policy/check") {

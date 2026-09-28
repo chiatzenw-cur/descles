@@ -103,7 +103,12 @@ func (a *AdminAccess) List() []AdminIdentity {
 
 func (a *AdminAccess) Resolve(token string) (AdminIdentity, bool) {
 	sum := sha256.Sum256([]byte(token))
-	digest := hex.EncodeToString(sum[:])
+	return a.ResolveDigest(hex.EncodeToString(sum[:]))
+}
+
+// ResolveDigest keeps a browser session tied to the exact named grant that
+// signed in. Revoking and reissuing the same user ID cannot revive old cookies.
+func (a *AdminAccess) ResolveDigest(digest string) (AdminIdentity, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	for _, g := range a.grants {
